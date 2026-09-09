@@ -1,0 +1,113 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <AssemblyName>VladMod.Core</AssemblyName>
+    <RootNamespace>HowToFishModMenu</RootNamespace>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- No BepInEx here — this DLL is injected straight into the game's Mono runtime -->
+
+  <!-- Memory-only injection: Harmony + MonoMod + Cecil are embedded as resources
+       and resolved from memory (see Core/Deps.cs), so nothing is written to disk. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Libs\0Harmony.dll">
+      <LogicalName>Deps.0Harmony.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\0Harmony20.dll">
+      <LogicalName>Deps.0Harmony20.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\MonoMod.RuntimeDetour.dll">
+      <LogicalName>Deps.MonoMod.RuntimeDetour.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\MonoMod.Utils.dll">
+      <LogicalName>Deps.MonoMod.Utils.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\Mono.Cecil.dll">
+      <LogicalName>Deps.Mono.Cecil.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\Mono.Cecil.Rocks.dll">
+      <LogicalName>Deps.Mono.Cecil.Rocks.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\Mono.Cecil.Mdb.dll">
+      <LogicalName>Deps.Mono.Cecil.Mdb.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Libs\Mono.Cecil.Pdb.dll">
+      <LogicalName>Deps.Mono.Cecil.Pdb.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <GameDir>C:\Program Files (x86)\Steam\steamapps\common\How to Fish\How to Fish</GameDir>
+    <ManagedDir>$(GameDir)\How to Fish_Data\Managed</ManagedDir>
+    <BepInExDir>$(GameDir)\BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Core\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Harmony is compile-time only here; at runtime it is resolved from embedded resources -->
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputModule">
+      <HintPath>$(ManagedDir)\UnityEngine.InputModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FishNet.Runtime">
+      <HintPath>$(ManagedDir)\FishNet.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GameKit.Dependencies">
+      <HintPath>$(ManagedDir)\GameKit.Dependencies.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FishNet.CodeAnalysis">
+      <HintPath>$(ManagedDir)\FishNet.CodeAnalysis.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

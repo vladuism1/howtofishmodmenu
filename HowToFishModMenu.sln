@@ -1,0 +1,39 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HowToFishModMenu.Core", "Standalone\HowToFishModMenu.Core.csproj", "{C4220D40-13AA-44D5-BB24-7EE474F8DB8A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HowToFishInjector", "Injector\HowToFishInjector.csproj", "{CF3AB482-23F7-4D7B-80DF-013B1348F15F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ThirdParty", "ThirdParty", "{F7E2DBF4-94A3-42A6-B3DF-AD508D524E04}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpMonoInjector", "ThirdParty\SharpMonoInjector\SharpMonoInjector.csproj", "{D5039E93-2474-4457-B607-77EA8C672323}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C4220D40-13AA-44D5-BB24-7EE474F8DB8A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4220D40-13AA-44D5-BB24-7EE474F8DB8A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4220D40-13AA-44D5-BB24-7EE474F8DB8A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C4220D40-13AA-44D5-BB24-7EE474F8DB8A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CF3AB482-23F7-4D7B-80DF-013B1348F15F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CF3AB482-23F7-4D7B-80DF-013B1348F15F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CF3AB482-23F7-4D7B-80DF-013B1348F15F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CF3AB482-23F7-4D7B-80DF-013B1348F15F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D5039E93-2474-4457-B607-77EA8C672323}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D5039E93-2474-4457-B607-77EA8C672323}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D5039E93-2474-4457-B607-77EA8C672323}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D5039E93-2474-4457-B607-77EA8C672323}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{D5039E93-2474-4457-B607-77EA8C672323} = {F7E2DBF4-94A3-42A6-B3DF-AD508D524E04}
+	EndGlobalSection
+EndGlobal
