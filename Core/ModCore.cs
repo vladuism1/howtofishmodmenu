@@ -81,11 +81,12 @@ namespace HowToFishModMenu
         private bool _prevCursorVisible;
         private CursorLockMode _prevCursorLock;
         private int _tab;
-        // PLITCH sidebar: icon + name per category (same 9 tabs, new look)
+        // PLITCH sidebar: plain ASCII names (Unity's default font has no
+        // unicode symbols — they render as boxes, see bug report screenshot)
         private readonly string[] _plitchTabs =
         {
-            "♥  Player", "＄  Money", "🎣  Fishing", "◎  Teleport", "✚  Weapons",
-            "★  Casino", "◉  World", "▤  Items", "⚿  Unlocks"
+            "Player", "Money", "Fishing", "Teleport", "Weapons",
+            "Casino", "World", "Items", "Unlocks"
         };
         private readonly string[] _plitchTabSubs =
         {
@@ -94,7 +95,7 @@ namespace HowToFishModMenu
         };
         private string _search = string.Empty;
         private Vector2 _contentScroll;
-        private Rect _windowRect = new Rect(60, 60, 780, 540);
+        private Rect _windowRect = new Rect(60, 60, 860, 560);
         private const int WindowId = 0x564D4144; // "VMAD" — unique so game windows can't collide
         private int _spawnFishIndex;
         private int _itemIndex;
@@ -446,7 +447,9 @@ namespace HowToFishModMenu
             Player local = Player.LocalPlayer;
             Player best = null;
             float bestScore = float.MaxValue;
-            foreach (Player p in PlayerManager.AlivePlayers)
+            var alive = PlayerManager.AlivePlayers;
+            if (alive == null) return null;
+            foreach (Player p in alive)
             {
                 if (!p || p == local || p.Transform == null || p.Vitals == null) continue;
                 try
@@ -608,31 +611,33 @@ namespace HowToFishModMenu
             }
 
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawWindow, string.Empty, _ui.Window,
-                GUILayout.MinWidth(720), GUILayout.MaxWidth(1100));
+                GUILayout.MinWidth(760), GUILayout.MaxWidth(1100));
         }
 
         private void DrawWindow(int id)
         {
+            // If a previous frame left GUI disabled via an early exit, reset it.
+            GUI.enabled = true;
             GUILayout.BeginVertical();
 
-            // ---- PLITCH top banner ----
+            // ---- PLITCH top banner (ASCII only — default font lacks symbols) ----
             GUILayout.BeginHorizontal(_ui.Banner, GUILayout.Height(54));
             GUILayout.Space(10);
-            GUILayout.BeginVertical(GUILayout.Width(300));
-            GUILayout.Label("🎣  HOW TO FISH", _ui.BannerTitle);
-            GUILayout.Label("30 CODES  •  v2.1.0 by Vlad  •  @vladuism", _ui.BannerSub);
+            GUILayout.BeginVertical(GUILayout.Width(280));
+            GUILayout.Label("HOW TO FISH", _ui.BannerTitle);
+            GUILayout.Label("30 CODES  |  v2.2.0 by Vlad  |  @vladuism", _ui.BannerSub);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
-            GUILayout.BeginVertical(GUILayout.Width(220));
+            GUILayout.BeginVertical(GUILayout.Width(200));
             GUILayout.Space(8);
             GUILayout.BeginHorizontal();
-            GUILayout.Label("⌕", _ui.SearchIcon, GUILayout.Width(22));
+            GUILayout.Label("Search:", _ui.SearchIcon, GUILayout.Width(52));
             string newSearch = GUILayout.TextField(_search ?? string.Empty, _ui.Search, GUILayout.Height(26));
             if (newSearch != _search) { _search = newSearch; _contentScroll = Vector2.zero; }
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
             GUILayout.Space(6);
-            if (GUILayout.Button("✕", _ui.CloseBtn, GUILayout.Width(30), GUILayout.Height(30)))
+            if (GUILayout.Button("X", _ui.CloseBtn, GUILayout.Width(30), GUILayout.Height(30)))
                 _menuOpen = false;
             GUILayout.Space(6);
             GUILayout.EndHorizontal();
@@ -641,19 +646,19 @@ namespace HowToFishModMenu
             GUILayout.BeginHorizontal(GUILayout.ExpandHeight(true));
 
             // sidebar
-            GUILayout.BeginVertical(_ui.Sidebar, GUILayout.Width(196), GUILayout.ExpandHeight(true));
+            GUILayout.BeginVertical(_ui.Sidebar, GUILayout.Width(180), GUILayout.ExpandHeight(true));
             GUILayout.Space(8);
             for (int i = 0; i < _plitchTabs.Length; i++)
             {
                 bool active = _tab == i;
                 int count = ActiveCountForTab(i);
                 int total = TotalCountForTab(i);
-                string label = _plitchTabs[i];
+                string label = (active ? "> " : "  ") + _plitchTabs[i];
                 if (GUILayout.Button(label, active ? _ui.SideActive : _ui.SideInactive, GUILayout.Height(32)))
                     { _tab = i; _contentScroll = Vector2.zero; }
                 // sub-label + counter under active tab
                 if (active)
-                    GUILayout.Label(_plitchTabSubs[i] + "   •   " + count + "/" + total + " ON", _ui.SideCounter);
+                    GUILayout.Label(_plitchTabSubs[i] + "  |  " + count + "/" + total + " ON", _ui.SideCounter);
                 else
                     GUILayout.Label(_plitchTabSubs[i], _ui.SideSub);
             }
@@ -662,9 +667,13 @@ namespace HowToFishModMenu
             GUILayout.Space(8);
             GUILayout.EndVertical();
 
-            // content
+            // content — ONE scroll view, closed in finally so an exception in
+            // any row can never corrupt the IMGUI layout stack (that was the
+            // "Mismatched LayoutGroup" bug: per-tab Begin/EndScrollView pairs
+            // skipped their End when a row threw).
             GUILayout.BeginVertical(_ui.Content, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
             GUILayout.Space(6);
+            _contentScroll = GUILayout.BeginScrollView(_contentScroll, GUILayout.ExpandHeight(true));
             try
             {
                 if (!string.IsNullOrEmpty(_search))
@@ -686,7 +695,7 @@ namespace HowToFishModMenu
                 }
             }
             catch (Exception e) { Log.Warn("[VladMod] Tab draw failed: " + e.Message); }
-            GUILayout.FlexibleSpace();
+            finally { GUILayout.EndScrollView(); }
             DrawFooter();
             GUILayout.Space(4);
             GUILayout.EndVertical();
@@ -729,7 +738,7 @@ namespace HowToFishModMenu
             GUILayout.BeginHorizontal(_ui.StatusBox, GUILayout.Height(40));
             GUILayout.Space(8);
             GUILayout.BeginVertical();
-            GUILayout.Label(IsHost() ? "● HOST" : (IsClient() ? "● CLIENT" : "● IDLE"), IsHost() ? _ui.StatusHost : _ui.StatusClient);
+            GUILayout.Label(IsHost() ? "HOST" : (IsClient() ? "CLIENT" : "IDLE"), IsHost() ? _ui.StatusHost : _ui.StatusClient);
             Player p = Player.LocalPlayer;
             GUILayout.Label(p ? ("$" + MoneyManager.Money + "  •  HP " + (p.Vitals != null ? p.Vitals.Health.ToString() : "?")) : "Not in game", _ui.StatusSub);
             GUILayout.EndVertical();
@@ -743,7 +752,8 @@ namespace HowToFishModMenu
         private void DrawPlayerTab()
         {
             PlitchSection("Player", "Health / Movement");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             bool g = CheatRow("God Mode", "No damage, no drowning, no hunger drain", ModState.GodMode, _settings.KeyGod.Value.ToString());
             if (g != ModState.GodMode) SetGodMode(g);
@@ -753,7 +763,7 @@ namespace HowToFishModMenu
             PlitchSlider(_settings.Speed, ref ModState.SpeedMulti, 0.5f, 5f, "Player Speed", "x");
             PlitchSlider(_settings.Jump, ref ModState.JumpMulti, 0.5f, 5f, "Jump Power", "x");
 
-            if (PlitchButton("＋  Max out health / fullness", true))
+            if (PlitchButton("+  Max out health / fullness", true))
                 MaxVitals();
             GUILayout.Space(6);
             if (PlitchButton("Skip intro / tutorial  (host)", false))
@@ -769,17 +779,30 @@ namespace HowToFishModMenu
             {
                 GUILayout.Space(8);
                 SubHeader("Vitals");
-                Bar("Health", p.Vitals.Health, VitalsMax(_maxHealthField, 100), new Color(0.25f, 0.85f, 0.45f));
-                Bar("Fullness", p.Vitals.Fullness, VitalsMax(_maxFullnessField, 100), new Color(0.95f, 0.7f, 0.3f));
+                int hp = 0, hpMax = 100, ful = 0, fulMax = 100;
+                try
+                {
+                    if (p.Vitals != null)
+                    {
+                        hp = p.Vitals.Health; ful = p.Vitals.Fullness;
+                    }
+                    hpMax = VitalsMax(_maxHealthField, 100);
+                    fulMax = VitalsMax(_maxFullnessField, 100);
+                }
+                catch { }
+                Bar("Health", hp, hpMax, new Color(0.25f, 0.85f, 0.45f));
+                Bar("Fullness", ful, fulMax, new Color(0.95f, 0.7f, 0.3f));
             }
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawMoneyTab()
         {
             PlitchSection("Money", "Infinite / Auto-sell");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             bool m = CheatRow("Infinite Money", "KEPT IN MP — free purchases via RPC (host: also locks pool)", ModState.InfiniteMoney, _settings.KeyMoney.Value.ToString());
             if (m != ModState.InfiniteMoney) SetInfMoney(m);
@@ -788,7 +811,7 @@ namespace HowToFishModMenu
 
             bool hostMoney = IsHost();
             GUI.enabled = hostMoney;
-            if (PlitchButton(hostMoney ? "＋  Give max money  (+$99999)" : "＋  Give max money (HOST ONLY)", false))
+            if (PlitchButton(hostMoney ? "+  Give max money  (+$99999)" : "+  Give max money (HOST ONLY)", false))
                 GiveMaxMoney();
             GUI.enabled = true;
             if (!hostMoney && IsClient())
@@ -811,13 +834,15 @@ namespace HowToFishModMenu
                 _ui.CardDesc);
             GUILayout.EndVertical();
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawFishingTab()
         {
             PlitchSection("Fishing", "Catch / Spawn");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             bool c = CheatRow("Instant Catch", "Fish bites the instant bait hits water", ModState.InstantCatch, _settings.KeyCatch.Value.ToString());
             if (c != ModState.InstantCatch) SetInstantCatch(c);
@@ -853,13 +878,15 @@ namespace HowToFishModMenu
             GUI.enabled = wasEnabled;
             GUILayout.EndVertical();
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawTeleportTab()
         {
             PlitchSection("Teleport", "Islands / Players");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             // BUG FIX (verified via IL): OnlineIslandManager.SpawnIsland returns
             // early unless IsServerInitialized, so island SWAPS are host-only.
@@ -870,7 +897,7 @@ namespace HowToFishModMenu
                 GUILayout.Label("CLIENT MODE — island swaps are host-only. Use MP-safe self-teleports below.", _ui.CardTitle);
 
             GUI.enabled = host;
-            if (PlitchButton(host ? "➤  Teleport to next island (host)" : "➤  Next island (HOST ONLY)", true))
+            if (PlitchButton(host ? ">  Teleport to next island (host)" : ">  Next island (HOST ONLY)", true))
                 SafeCall(() => OnlineIslandManager.TpToNextIsland(false));
             GUILayout.Space(6);
             if (PlitchButton(host ? "Teleport to previous island (host)" : "Previous island (HOST ONLY)", false))
@@ -899,7 +926,7 @@ namespace HowToFishModMenu
             for (byte i = 1; i <= 6; i++)
             {
                 byte island = i;
-                if (GUILayout.Button("Me→" + island, _ui.Btn, GUILayout.Height(24)))
+                if (GUILayout.Button("Me>" + island, _ui.Btn, GUILayout.Height(24)))
                     TeleportMeToIsland(island);
             }
             GUILayout.EndHorizontal();
@@ -909,7 +936,7 @@ namespace HowToFishModMenu
             GUILayout.Space(6);
 
             var players = PlayerManager.Players;
-            if (players.Count > 0)
+            if (players != null && players.Count > 0)
             {
                 _teleportIndex = Mathf.Clamp(_teleportIndex, 0, players.Count - 1);
                 GUILayout.BeginVertical(_ui.Card);
@@ -940,16 +967,18 @@ namespace HowToFishModMenu
                 GUILayout.Space(6);
             }
 
-            if (PlitchButton("✚  Revive all dead players", true))
+            if (PlitchButton("+  Revive all dead players", true))
                 ReviveAll();
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawWeaponsTab()
         {
             PlitchSection("Weapons", "Ammo / Aimbot / Upgrades");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             bool a = CheatRow("Infinite Ammo", "Weapons never run out, no reloads (works in MP)", ModState.InfiniteAmmo, "—");
             if (a != ModState.InfiniteAmmo) { ModState.InfiniteAmmo = a; _settings.InfAmmo.Value = a; }
@@ -972,7 +1001,8 @@ namespace HowToFishModMenu
             if (!p || p.Holding == null || p.Holding.HeldItem == null)
             {
                 GUILayout.Label("Hold a weapon to see its stats and upgrades.", _ui.LabelDim);
-                EndContentScroll();
+                // (scroll closed centrally)
+
                 return;
             }
 
@@ -1018,13 +1048,15 @@ namespace HowToFishModMenu
             }
             GUILayout.EndVertical();
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawCasinoTab()
         {
             PlitchSection("Casino", "Host only");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             bool r = CheatRow("Rig Roulette", "Every spin pays out (host forces result)", ModState.RigRoulette, "—");
             if (r != ModState.RigRoulette) { ModState.RigRoulette = r; _settings.RigRoulette.Value = r; }
@@ -1037,13 +1069,15 @@ namespace HowToFishModMenu
             GUILayout.Label("Works only when you host the lobby.", _ui.CardTitle);
             GUILayout.EndVertical();
 
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawWorldTab()
         {
             PlitchSection("World", "Combat / Ocean / ESP");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             PlitchSlider(_settings.Damage, ref ModState.DamageMulti, 0f, 10f, "Damage Multiplier", "x");
             if (!Mathf.Approximately(ModState.DamageMulti, 1f))
@@ -1071,7 +1105,7 @@ namespace HowToFishModMenu
             GUILayout.Label("ACTIONS  (HOST)", _ui.CardDesc);
             bool wasEnabled = GUI.enabled;
             GUI.enabled = IsHost();
-            if (PlitchButton("✸  Spawn explosion at me", false))
+            if (PlitchButton("Spawn explosion at me", false))
                 SpawnExplosion();
             GUILayout.Space(6);
             if (PlitchButton("Spawn boss", false))
@@ -1114,7 +1148,8 @@ namespace HowToFishModMenu
             SubHeader("Achievements");
             if (PlitchButton("Unlock ALL Steam achievements", false))
                 SafeCall(() => AchievementManager.ToggleAllAchievements(true));
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawPresets()
@@ -1146,7 +1181,7 @@ namespace HowToFishModMenu
                     (_settings.InfMoney, true), (_settings.AutoSell, true), (_settings.InstantCatch, true), (_settings.AutoFish, true)
                 }, null);
             }
-            if (GUILayout.Button("★  Everything", _ui.BtnAccent, GUILayout.Height(26)))
+            if (GUILayout.Button("Everything", _ui.BtnAccent, GUILayout.Height(26)))
             {
                 ApplyPreset(new[]
                 {
@@ -1222,7 +1257,8 @@ namespace HowToFishModMenu
         {
             string q = (_search ?? string.Empty).Trim().ToLower();
             PlitchSection("Search", "\"" + _search + "\"");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
             int hits = 0;
             hits += SearchCheat(q, "God Mode", "Player — no damage / drowning", ModState.GodMode, v => SetGodMode(v), _settings.KeyGod.Value.ToString());
             hits += SearchCheat(q, "Infinite Fullness", "Player — no hunger", ModState.InfiniteFullness, v => { ModState.InfiniteFullness = v; _settings.InfFullness.Value = v; }, null);
@@ -1247,7 +1283,8 @@ namespace HowToFishModMenu
             hits += SearchCheat(q, "Aimbot Bosses", "Weapons — auto-hit bosses (MP-safe RPC)", ModState.AimbotBosses, v => { ModState.AimbotBosses = v; _settings.AimBosses.Value = v; }, null);
             if (hits == 0)
                 GUILayout.Label("No cheats match \"" + _search + "\".", _ui.LabelDim);
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private int SearchCheat(string q, string title, string desc, bool value, Action<bool> set, string hotkey)
@@ -1261,7 +1298,8 @@ namespace HowToFishModMenu
         private void DrawUnlockTab()
         {
             PlitchSection("Unlocks", "One-time / Presets");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             GUILayout.BeginVertical(_ui.Card);
             GUILayout.Label("ONE-TIME UNLOCKS", _ui.CardDesc);
@@ -1284,19 +1322,22 @@ namespace HowToFishModMenu
             GUILayout.Space(6);
             DrawPresets();
             DrawKeybinds();
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         private void DrawItemsTab()
         {
             PlitchSection("Items", "Browser / Skins");
-            BeginContentScroll();
+            // content scroll is opened/closed centrally in DrawWindow
+
 
             int count = ModItems.Count;
             if (count <= 0)
             {
                 GUILayout.Label("No items found.", _ui.LabelDim);
-                EndContentScroll();
+                // (scroll closed centrally)
+
                 return;
             }
             _itemIndex = Mathf.Clamp(_itemIndex, 0, count - 1);
@@ -1319,14 +1360,15 @@ namespace HowToFishModMenu
             GUILayout.EndHorizontal();
 
             GUILayout.Space(6);
-            if (PlitchButton("＋  Give this item  (free)", true))
+            if (PlitchButton("+  Give this item  (free)", true))
                 GiveItem(_itemIndex);
             GUILayout.EndVertical();
             GUILayout.Space(6);
 
             if (PlitchButton("Unlock all outfits / skins", false))
                 UnlockAllSkins();
-            EndContentScroll();
+            // (scroll closed centrally)
+
         }
 
         // ==================================================================
@@ -1349,11 +1391,8 @@ namespace HowToFishModMenu
         private void PlitchSection(string title, string sub)
         {
             GUILayout.Space(4);
-            GUILayout.BeginHorizontal();
             GUILayout.Label(title.ToUpper(), _ui.SectionHeader);
-            GUILayout.FlexibleSpace();
             GUILayout.Label(sub, _ui.CardDesc);
-            GUILayout.EndHorizontal();
             GUILayout.Box(string.Empty, _ui.Sep, GUILayout.ExpandWidth(true), GUILayout.Height(2));
             GUILayout.Space(4);
         }
@@ -1383,7 +1422,7 @@ namespace HowToFishModMenu
 
         private bool PlitchSwitch(bool value)
         {
-            string label = value ? "●  ON" : "○  OFF";
+            string label = value ? "ON" : "OFF";
             GUIStyle st = value ? _ui.SwitchOn : _ui.SwitchOff;
             if (GUILayout.Button(label, st, GUILayout.Width(110), GUILayout.Height(24)))
                 return !value;
@@ -1401,14 +1440,16 @@ namespace HowToFishModMenu
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, _ui.CardTitle);
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("−", _ui.StepBtn, GUILayout.Width(26), GUILayout.Height(22)))
+            if (GUILayout.Button("-", _ui.StepBtn, GUILayout.Width(26), GUILayout.Height(22)))
                 field = Mathf.Clamp((float)Math.Round(field - 0.1f, 2), min, max);
             GUILayout.Label(field.ToString("0.00") + suffix, _ui.Hotkey, GUILayout.Width(70), GUILayout.Height(18));
             if (GUILayout.Button("+", _ui.StepBtn, GUILayout.Width(26), GUILayout.Height(22)))
                 field = Mathf.Clamp((float)Math.Round(field + 0.1f, 2), min, max);
             GUILayout.EndHorizontal();
             GUILayout.Space(2);
-            float v = GUILayout.HorizontalSlider(field, min, max, _ui.Slider, _ui.Thumb);
+            // Plain slider style: custom ScrollView-cloned styles risk null
+            // textures on some Unity versions and render as black boxes.
+            float v = GUILayout.HorizontalSlider(field, min, max);
             float rounded = (float)Math.Round(v, 2);
             if (!Mathf.Approximately(rounded, field))
             {
@@ -1436,12 +1477,11 @@ namespace HowToFishModMenu
 
         private void Bar(string label, int value, int max, Color fillColor)
         {
-            const float barWidth = 250f;
             float percent = Mathf.Clamp01(max > 0 ? (float)value / max : 0f);
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, _ui.Label, GUILayout.Width(72));
-            GUILayout.Box(string.Empty, _ui.BarTrack, GUILayout.Width(barWidth), GUILayout.Height(12));
+            GUILayout.Box(string.Empty, _ui.BarTrack, GUILayout.ExpandWidth(true), GUILayout.Height(12));
             Rect track = GUILayoutUtility.GetLastRect();
             if (track.width > 1f)
             {
@@ -1517,7 +1557,7 @@ namespace HowToFishModMenu
             }
 
             // players (skip self)
-            if (ModState.EspPlayers)
+            if (ModState.EspPlayers && PlayerManager.AlivePlayers != null)
             {
                 foreach (Player p in PlayerManager.AlivePlayers)
                 {
@@ -1528,7 +1568,7 @@ namespace HowToFishModMenu
             }
 
             // ground loot
-            if (ModState.EspItems)
+            if (ModState.EspItems && ItemManager.Items != null)
             {
                 foreach (var kv in ItemManager.Items)
                 {
@@ -1556,7 +1596,7 @@ namespace HowToFishModMenu
                         if (ipos == Vector3.zero) continue;
                         float dist = Vector3.Distance(camPos, ipos);
                         string label = "Island " + (i + 1) + " " + Mathf.RoundToInt(dist) + "m";
-                        if (i + 1 == cur) label = "◉ " + label;
+                        if (i + 1 == cur) label = "(*) " + label;
                         DrawEspMarker(cam, ipos, camPos, width, height, new Color(0.65f, 0.45f, 1f), label);
                     }
                 }
