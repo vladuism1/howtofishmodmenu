@@ -4,6 +4,7 @@ using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 using FishNet.Managing;
+using FishNet.Transporting;
 
 namespace HowToFishModMenu
 {
@@ -29,10 +30,10 @@ namespace HowToFishModMenu
         public static bool EspPlayers;         // ESP overlay: players
         public static bool EspItems;           // ESP overlay: ground loot
         public static bool EspIslands;         // ESP overlay: island positions (from IslandManager)
-        public static bool AimbotPlayers;      // auto-hit nearest player via Server.HitPlayer RPC
-        public static bool AimbotFish;         // auto-hit nearest fish/creature via Server.HitCreature RPC
-        public static bool AimbotBosses;       // auto-hit nearest boss (BossType != None)
-        public static bool AimSoftSnap;        // client-side camera snap toward aimbot target (visual only)
+        public static bool AimbotPlayers;      // aim-lock nearest player (client camera only)
+        public static bool AimbotFish;         // aim-lock nearest fish/creature
+        public static bool AimbotBosses;       // aim-lock nearest boss (BossType != None)
+        public static bool AimbotBirds;        // aim-lock nearest seagull (Bird : Creature)
         public static float AimRange = 60f;    // aimbot max distance in meters
         public static float AimFov = 30f;      // aimbot max angle from crosshair in degrees
         public static float SpeedMulti = 1f;   // movement speed multiplier
@@ -165,7 +166,7 @@ namespace HowToFishModMenu
                 ModState.AimbotPlayers = _settings.AimPlayers.Value;
                 ModState.AimbotFish = _settings.AimFish.Value;
                 ModState.AimbotBosses = _settings.AimBosses.Value;
-                ModState.AimSoftSnap = _settings.AimSnap.Value;
+                ModState.AimbotBirds = _settings.AimBirds.Value;
                 ModState.AimRange = _settings.AimRange.Value;
                 ModState.AimFov = _settings.AimFov.Value;
                 ModState.SpeedMulti = _settings.Speed.Value;
@@ -323,123 +324,212 @@ namespace HowToFishModMenu
         }
 
         // ------------------------------------------------------------------
-        // Auto sell: host sells every fish in the local player's inventory.
+        // Auto sell, two paths (all verified in Assembly-CSharp):
+        // - HOST: MoneyManager.SellItem is server-only, so sell instantly
+        //   from anywhere (original behavior).
+        // - CLIENT: SellItem early-returns, so feed the seller NPC instead.
+        //   NPC.EatItem (server) calls SellItem for quest Type==1 items that
+        //   enter the NPC trigger. We move inventory items to the NPC mouth
+        //   with RemoveItemFromInventory + UpdateItemPosRot — both ServerRPCs
+        //   whose RpcLogic has no ownership check. Dead creatures only
+        //   (CanEat), so live fish are killed first via HitCreature.
         // ------------------------------------------------------------------
         private void AutoSellLoop()
         {
-            if (!ModState.AutoSell || !IsHost()) return;
+            if (!ModState.AutoSell) return;
             _autoSellTimer -= Time.deltaTime;
             if (_autoSellTimer > 0f) return;
             _autoSellTimer = 1.5f;
 
             Player player = Player.LocalPlayer;
-            if (!player || player.Inventory == null) return;
+            if (!player || player.Inventory == null || Server.Instance == null) return;
 
-            var toSell = new List<Item>();
-            foreach (KeyValuePair<byte, Item> kv in player.Inventory._items)
+            if (IsHost())
             {
-                Item it = kv.Value;
-                if (it && it is Fish) toSell.Add(it);
+                var toSell = new List<Item>();
+                foreach (KeyValuePair<byte, Item> kv in player.Inventory._items)
+                {
+                    Item it = kv.Value;
+                    if (it && it is Fish) toSell.Add(it);
+                }
+                foreach (Item it in toSell)
+                {
+                    try
+                    {
+                        MoneyManager.SellItem(it);
+                        player.Inventory.RemoveItem(it);
+                        it.DestroyItem(0, byte.MaxValue);
+                    }
+                    catch { }
+                }
+                return;
             }
-            foreach (Item it in toSell)
+
+            AutoSellNpcFeed(player);
+        }
+
+        private static MethodInfo _canEatMethod;
+        private static NPC _sellerCache;
+        private static float _sellerCacheTime;
+        private static string _sellerStatus = "Seller: scanning...";
+
+        // Nearest NPC owning a Type==1 (money/sell) quest. IDs probed 0..255.
+        private NPC FindSellerNpc(Player player)
+        {
+            if (_sellerCache != null && Time.time - _sellerCacheTime < 3f && _sellerCache) return _sellerCache;
+            NPC best = null;
+            float bestD = float.MaxValue;
+            Vector3 pp = player.Transform.position;
+            for (int i = 0; i < 256; i++)
             {
+                NPC npc = null;
+                try { npc = NPCManager.IDToNpc((byte)i); } catch { continue; }
+                if (!npc || npc == null || npc.transform == null) continue;
+                bool seller = false;
                 try
                 {
-                    MoneyManager.SellItem(it);
-                    player.Inventory.RemoveItem(it);
-                    it.DestroyItem(0, byte.MaxValue);
+                    foreach (NPCQuest q in npc.Quests)
+                    {
+                        if (q != null && (int)q.Type == 1) { seller = true; break; }
+                    }
+                }
+                catch { continue; }
+                if (!seller) continue;
+                float d = Vector3.Distance(pp, npc.transform.position);
+                if (d < bestD) { bestD = d; best = npc; }
+            }
+            _sellerCache = best;
+            _sellerCacheTime = Time.time;
+            try
+            {
+                _sellerStatus = best != null
+                    ? "Seller: " + Mathf.RoundToInt(Vector3.Distance(pp, best.transform.position)) + "m away"
+                    : "Seller: none found on this island";
+            }
+            catch { _sellerStatus = "Seller: unknown"; }
+            return best;
+        }
+
+        // Runtime CanEat probe (private NPC.CanEat, verified signature).
+        private bool SellerAccepts(NPC seller, Item it)
+        {
+            try
+            {
+                if (_canEatMethod == null)
+                    _canEatMethod = AccessTools.Method(typeof(NPC), "CanEat");
+                if (_canEatMethod != null)
+                {
+                    foreach (NPCQuest q in seller.Quests)
+                    {
+                        if (q == null) continue;
+                        try
+                        {
+                            object r = _canEatMethod.Invoke(seller, new object[] { q, it });
+                            if (r is bool b && b) return true;
+                        }
+                        catch { }
+                    }
+                    return false;
+                }
+            }
+            catch { }
+            try
+            {
+                Creature c = it.Creature;
+                if (c != null) return c.IsDead;
+                return it.TotalWorth > 0 && !it.IgnoredByMoneyNpc;
+            }
+            catch { return false; }
+        }
+
+        private void AutoSellNpcFeed(Player player)
+        {
+            NPC seller = null;
+            try { seller = FindSellerNpc(player); } catch { return; }
+            if (seller == null || seller.transform == null) return;
+            if (Vector3.Distance(player.Transform.position, seller.transform.position) > 12f) return;
+            Transform mouth = null;
+            try { mouth = seller.MouthPosForItems; } catch { }
+            if (mouth == null) return;
+
+            Item held = player.Holding != null ? player.Holding.HeldItem : null;
+            var snapshot = new List<Item>();
+            try
+            {
+                foreach (KeyValuePair<byte, Item> kv in player.Inventory._items)
+                {
+                    if (kv.Value && kv.Value != null) snapshot.Add(kv.Value);
+                }
+            }
+            catch { return; }
+
+            int fed = 0;
+            foreach (Item it in snapshot)
+            {
+                if (fed >= 2) break;
+                if (!it || it == null || it == held) continue;
+                try
+                {
+                    if (!SellerAccepts(seller, it)) continue;
+                    Creature c = null;
+                    try { c = it.Creature; } catch { }
+                    if (c != null && !c.IsDead)
+                    {
+                        Vector3 cp = c.transform.position;
+                        SafeCall(() => Server.Instance.HitCreature(c, player, 999999, cp, Vector3.down));
+                        fed++;
+                        continue;
+                    }
+                    it.SpawnFromInventory();
+                    SafeCall(() => Server.Instance.RemoveItemFromInventory(player, it));
+                    Vector3 mp = mouth.position;
+                    SafeCall(() => Server.Instance.UpdateItemPosRot(it, player.Owner, mp,
+                        Quaternion.identity, false, new Single[0], new Quaternion[0], default(Channel)));
+                    fed++;
                 }
                 catch { }
             }
         }
 
-        private float _aimbotTimer;
+        private void TeleportToSeller()
+        {
+            Player p = Player.LocalPlayer;
+            if (!p || Server.Instance == null) return;
+            NPC seller = null;
+            try { seller = FindSellerNpc(p); } catch { return; }
+            if (seller == null || seller.transform == null) return;
+            Vector3 pos = seller.transform.position + Vector3.up * 1.5f;
+            try { pos = seller.transform.position - seller.transform.forward * 2f + Vector3.up * 1.5f; } catch { }
+            SafeCall(() => Server.Instance.TeleportPlayer(p, pos, 0f));
+        }
 
         // ------------------------------------------------------------------
-        // Aimbot: uses verified Server RPCs (Server.HitPlayer / HitCreature),
-        // whose RpcLogic has no ownership check, so they work as host AND
-        // client. Camera snap is client-side visual only.
+        // Aimbot = aim LOCK only (no shooting, no damage RPCs). Every frame the
+        // client camera eases toward the best target in the crosshair cone.
+        // Purely client-side, so it works as host AND joiner, single + MP.
         // ------------------------------------------------------------------
         private void AimbotTick()
         {
-            if (!ModState.AimbotPlayers && !ModState.AimbotFish && !ModState.AimbotBosses) return;
+            if (!ModState.AimbotPlayers && !ModState.AimbotFish && !ModState.AimbotBosses && !ModState.AimbotBirds) return;
             Player local = Player.LocalPlayer;
             if (!local || local.BlockInputs) return;
-            if (Server.Instance == null) return;
             Camera cam = GameInfo.CurCamera != null ? GameInfo.CurCamera : Camera.main;
             if (!cam) return;
 
-            _aimbotTimer -= Time.deltaTime;
-            bool doSnap = ModState.AimSoftSnap;
-
-            // Soft camera snap every frame (visual, client-side, MP-safe).
-            if (doSnap)
-            {
-                try
-                {
-                    Transform t = FindAimTransform(cam);
-                    if (t != null)
-                    {
-                        Vector3 aimPos = t.position + Vector3.up * 1.2f;
-                        Vector3 dir = aimPos - cam.transform.position;
-                        if (dir.sqrMagnitude > 0.01f && dir.sqrMagnitude < ModState.AimRange * ModState.AimRange)
-                        {
-                            Quaternion want = Quaternion.LookRotation(dir.normalized);
-                            cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, want, 0.25f);
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            // Auto-hit trigger every 0.25s. Requires holding a weapon/melee? No —
-            // the RPCs work bare-handed too, but gate on not-blocked inputs only.
-            if (_aimbotTimer > 0f) return;
-            _aimbotTimer = 0.25f;
-
             try
             {
-                int dmg = AimbotDamage();
-                Vector3 from = cam.transform.position;
-                Vector3 fwd = cam.transform.forward;
-
-                if (ModState.AimbotPlayers)
+                Transform t = FindAimTransform(cam);
+                if (t == null) return;
+                Vector3 aimPos = t.position + Vector3.up * 1f;
+                Vector3 dir = aimPos - cam.transform.position;
+                float range = ModState.AimRange;
+                if (dir.sqrMagnitude > 0.01f && dir.sqrMagnitude < range * range)
                 {
-                    Player best = FindAimPlayer(cam, from, fwd);
-                    if (best != null)
-                    {
-                        Vector3 hp = best.Transform.position + Vector3.up * 1.2f;
-                        Vector3 dir = (hp - from).normalized;
-                        SafeCall(() => Server.Instance.HitPlayer(best, dmg, dir * 10f, hp, (byte)DamageType.Generic, local));
-                    }
-                }
-                if (ModState.AimbotFish || ModState.AimbotBosses)
-                {
-                    Creature best = FindAimCreature(cam, from, fwd, ModState.AimbotBosses, ModState.AimbotFish);
-                    if (best != null)
-                    {
-                        Vector3 hp = best.transform.position + Vector3.up * 0.8f;
-                        Vector3 dir = (hp - from).normalized;
-                        SafeCall(() => Server.Instance.HitCreature(best, local, dmg, hp, dir));
-                    }
+                    Quaternion want = Quaternion.LookRotation(dir.normalized);
+                    cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, want, 0.45f);
                 }
             }
             catch { }
-        }
-
-        private int AimbotDamage()
-        {
-            try
-            {
-                Player p = Player.LocalPlayer;
-                Item held = p != null && p.Holding != null ? p.Holding.HeldItem : null;
-                Weapon w = held as Weapon;
-                if (w != null && w.Attachments != null && w.Attachments.Damage > 0)
-                    return Mathf.Clamp(w.Attachments.Damage * Mathf.Max(1, Mathf.RoundToInt(ModState.DamageMulti)), 1, 999999);
-            }
-            catch { }
-            if (ModState.OneShot) return 999999;
-            return Mathf.Clamp(Mathf.RoundToInt(50f * ModState.DamageMulti), 1, 999999);
         }
 
         private Player FindAimPlayer(Camera cam, Vector3 from, Vector3 fwd)
@@ -500,6 +590,37 @@ namespace HowToFishModMenu
             return best;
         }
 
+        // Seagulls are Bird : Creature and live in the same _aliveCreatures
+        // list (verified in Assembly-CSharp). Lock-only, like the rest.
+        private Creature FindAimBird(Camera cam, Vector3 from, Vector3 fwd)
+        {
+            if (CreatureManager.Instance == null || _aliveCreaturesField == null) return null;
+            Creature best = null;
+            float bestScore = float.MaxValue;
+            var list = _aliveCreaturesField.GetValue(CreatureManager.Instance) as System.Collections.IEnumerable;
+            if (list == null) return null;
+            foreach (object o in list)
+            {
+                var c = o as Creature;
+                if (!c || c == null || c.transform == null) continue;
+                try
+                {
+                    if (!(c is Bird)) continue;
+                    if (c.IsDead) continue;
+                    Vector3 tp = c.transform.position + Vector3.up * 0.6f;
+                    Vector3 to = tp - from;
+                    float dist = to.magnitude;
+                    if (dist > ModState.AimRange || dist < 0.5f) continue;
+                    float ang = Vector3.Angle(fwd, to.normalized);
+                    if (ang > ModState.AimFov) continue;
+                    float score = ang * 2f + dist * 0.1f;
+                    if (score < bestScore) { bestScore = score; best = c; }
+                }
+                catch { }
+            }
+            return best;
+        }
+
         private Transform FindAimTransform(Camera cam)
         {
             Vector3 from = cam.transform.position;
@@ -514,6 +635,11 @@ namespace HowToFishModMenu
             {
                 Creature bc = FindAimCreature(cam, from, fwd, ModState.AimbotBosses, ModState.AimbotFish);
                 if (bc != null && bc.transform != null && bestT == null) bestT = bc.transform;
+            }
+            if (ModState.AimbotBirds && bestT == null)
+            {
+                Creature bb = FindAimBird(cam, from, fwd);
+                if (bb != null && bb.transform != null) bestT = bb.transform;
             }
             return bestT;
         }
@@ -715,7 +841,7 @@ namespace HowToFishModMenu
                 case 2: return (ModState.InstantCatch ? 1 : 0) + (ModState.AutoFish ? 1 : 0) + (ModState.ForceShiny ? 1 : 0);
                 case 3: return 0;
                 case 4: return (ModState.InfiniteAmmo ? 1 : 0) + (ModState.NoCooldown ? 1 : 0)
-                    + (ModState.AimbotPlayers ? 1 : 0) + (ModState.AimbotFish ? 1 : 0) + (ModState.AimbotBosses ? 1 : 0);
+                    + (ModState.AimbotPlayers ? 1 : 0) + (ModState.AimbotFish ? 1 : 0) + (ModState.AimbotBosses ? 1 : 0) + (ModState.AimbotBirds ? 1 : 0);
                 case 5: return (ModState.RigRoulette ? 1 : 0) + (ModState.RigSlots ? 1 : 0);
                 case 6: return (ModState.OneShot ? 1 : 0) + (ModState.Sunset ? 1 : 0) + (ModState.BuiltInCheats ? 1 : 0)
                     + (ModState.EspFish ? 1 : 0) + (ModState.EspPlayers ? 1 : 0) + (ModState.EspItems ? 1 : 0) + (ModState.EspIslands ? 1 : 0);
@@ -729,7 +855,7 @@ namespace HowToFishModMenu
             switch (tab)
             {
                 case 0: return 2; case 1: return 2; case 2: return 3; case 3: return 0;
-                case 4: return 5; case 5: return 2; case 6: return 7; default: return 0;
+                case 4: return 6; case 5: return 2; case 6: return 7; default: return 0;
             }
         }
 
@@ -806,8 +932,29 @@ namespace HowToFishModMenu
 
             bool m = CheatRow("Infinite Money", "KEPT IN MP — free purchases via RPC (host: also locks pool)", ModState.InfiniteMoney, _settings.KeyMoney.Value.ToString());
             if (m != ModState.InfiniteMoney) SetInfMoney(m);
-            bool s = CheatRow("Auto-Sell Fish", "Automatically sell caught fish (host)", ModState.AutoSell, "—");
+            bool s = CheatRow("Auto-Sell Fish", "Host: instant anywhere - Client: feeds seller NPC nearby", ModState.AutoSell, null);
             if (s != ModState.AutoSell) { ModState.AutoSell = s; _settings.AutoSell.Value = s; }
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("SELLER NPC  (current island)", _ui.CardDesc);
+            Player sellerRef = Player.LocalPlayer;
+            if (sellerRef != null && sellerRef.Transform != null)
+            {
+                try
+                {
+                    NPC seller = FindSellerNpc(sellerRef);
+                    GUILayout.Label(seller != null ? _sellerStatus + " - stand within 12m" : _sellerStatus, _ui.CardTitle);
+                }
+                catch { GUILayout.Label(_sellerStatus, _ui.CardTitle); }
+            }
+            else
+            {
+                GUILayout.Label("Join an island to find the seller.", _ui.CardTitle);
+            }
+            if (PlitchButton("Teleport me to seller (MP-safe)", false))
+                TeleportToSeller();
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
 
             bool hostMoney = IsHost();
             GUI.enabled = hostMoney;
@@ -985,15 +1132,15 @@ namespace HowToFishModMenu
             bool cd = CheatRow("No Cooldown", "Weapons fire with no cooldown (works in MP)", ModState.NoCooldown, "—");
             if (cd != ModState.NoCooldown) { ModState.NoCooldown = cd; _settings.NoCooldown.Value = cd; }
 
-            SubHeader("Aimbot  (MP-safe Server RPCs)");
-            bool ap = CheatRow("Aimbot Players", "Auto-hit nearest player in crosshair", ModState.AimbotPlayers, "—");
+            SubHeader("Aimbot  (lock-only, no shooting)");
+            bool ap = CheatRow("Aimbot Players", "Camera locks onto nearest player", ModState.AimbotPlayers, null);
             if (ap != ModState.AimbotPlayers) { ModState.AimbotPlayers = ap; _settings.AimPlayers.Value = ap; }
-            bool af = CheatRow("Aimbot Fish", "Auto-hit nearest fish / creature", ModState.AimbotFish, "—");
+            bool af = CheatRow("Aimbot Fish", "Camera locks onto nearest fish / creature", ModState.AimbotFish, null);
             if (af != ModState.AimbotFish) { ModState.AimbotFish = af; _settings.AimFish.Value = af; }
-            bool ab = CheatRow("Aimbot Bosses", "Auto-hit nearest boss (BossType != None)", ModState.AimbotBosses, "—");
+            bool ab = CheatRow("Aimbot Bosses", "Camera locks onto nearest boss", ModState.AimbotBosses, null);
             if (ab != ModState.AimbotBosses) { ModState.AimbotBosses = ab; _settings.AimBosses.Value = ab; }
-            bool sn = CheatRow("Camera Snap", "Client-side camera eases toward target (visual)", ModState.AimSoftSnap, "—");
-            if (sn != ModState.AimSoftSnap) { ModState.AimSoftSnap = sn; _settings.AimSnap.Value = sn; }
+            bool ad = CheatRow("Aimbot Seagulls", "Camera locks onto nearest seagull", ModState.AimbotBirds, null);
+            if (ad != ModState.AimbotBirds) { ModState.AimbotBirds = ad; _settings.AimBirds.Value = ad; }
             PlitchSlider(_settings.AimRange, ref ModState.AimRange, 10f, 150f, "Aim Range", "m");
             PlitchSlider(_settings.AimFov, ref ModState.AimFov, 5f, 90f, "Aim FOV", "°");
 
@@ -1263,7 +1410,7 @@ namespace HowToFishModMenu
             hits += SearchCheat(q, "God Mode", "Player — no damage / drowning", ModState.GodMode, v => SetGodMode(v), _settings.KeyGod.Value.ToString());
             hits += SearchCheat(q, "Infinite Fullness", "Player — no hunger", ModState.InfiniteFullness, v => { ModState.InfiniteFullness = v; _settings.InfFullness.Value = v; }, null);
             hits += SearchCheat(q, "Infinite Money", "Money — never drains", ModState.InfiniteMoney, v => SetInfMoney(v), _settings.KeyMoney.Value.ToString());
-            hits += SearchCheat(q, "Auto-Sell Fish", "Money — auto sell (host)", ModState.AutoSell, v => { ModState.AutoSell = v; _settings.AutoSell.Value = v; }, null);
+            hits += SearchCheat(q, "Auto-Sell Fish", "Money — host instant, client feeds seller NPC", ModState.AutoSell, v => { ModState.AutoSell = v; _settings.AutoSell.Value = v; }, null);
             hits += SearchCheat(q, "Instant Catch", "Fishing — instant bite", ModState.InstantCatch, v => SetInstantCatch(v), _settings.KeyCatch.Value.ToString());
             hits += SearchCheat(q, "Auto Fish", "Fishing — auto reel", ModState.AutoFish, v => SetAutoFish(v), _settings.KeyFish.Value.ToString());
             hits += SearchCheat(q, "Always Shiny", "Fishing — rare skin", ModState.ForceShiny, v => { ModState.ForceShiny = v; _settings.ForceShiny.Value = v; }, null);
@@ -1278,9 +1425,10 @@ namespace HowToFishModMenu
             hits += SearchCheat(q, "ESP Players", "World — player overlay", ModState.EspPlayers, v => { ModState.EspPlayers = v; _settings.EspPlayers.Value = v; }, _settings.KeyEsp.Value.ToString());
             hits += SearchCheat(q, "ESP Loot", "World — loot overlay", ModState.EspItems, v => { ModState.EspItems = v; _settings.EspItems.Value = v; }, _settings.KeyEsp.Value.ToString());
             hits += SearchCheat(q, "ESP Islands", "World — island positions", ModState.EspIslands, v => { ModState.EspIslands = v; _settings.EspIslands.Value = v; }, _settings.KeyEsp.Value.ToString());
-            hits += SearchCheat(q, "Aimbot Players", "Weapons — auto-hit players (MP-safe RPC)", ModState.AimbotPlayers, v => { ModState.AimbotPlayers = v; _settings.AimPlayers.Value = v; }, null);
-            hits += SearchCheat(q, "Aimbot Fish", "Weapons — auto-hit fish (MP-safe RPC)", ModState.AimbotFish, v => { ModState.AimbotFish = v; _settings.AimFish.Value = v; }, null);
-            hits += SearchCheat(q, "Aimbot Bosses", "Weapons — auto-hit bosses (MP-safe RPC)", ModState.AimbotBosses, v => { ModState.AimbotBosses = v; _settings.AimBosses.Value = v; }, null);
+            hits += SearchCheat(q, "Aimbot Players", "Weapons — lock onto players", ModState.AimbotPlayers, v => { ModState.AimbotPlayers = v; _settings.AimPlayers.Value = v; }, null);
+            hits += SearchCheat(q, "Aimbot Fish", "Weapons — lock onto fish", ModState.AimbotFish, v => { ModState.AimbotFish = v; _settings.AimFish.Value = v; }, null);
+            hits += SearchCheat(q, "Aimbot Bosses", "Weapons — lock onto bosses", ModState.AimbotBosses, v => { ModState.AimbotBosses = v; _settings.AimBosses.Value = v; }, null);
+            hits += SearchCheat(q, "Aimbot Seagulls", "Weapons — lock onto seagulls", ModState.AimbotBirds, v => { ModState.AimbotBirds = v; _settings.AimBirds.Value = v; }, null);
             if (hits == 0)
                 GUILayout.Label("No cheats match \"" + _search + "\".", _ui.LabelDim);
             // (scroll closed centrally)
@@ -1579,32 +1727,18 @@ namespace HowToFishModMenu
                 }
             }
 
-            // islands (verified: IslandManager.GetIslandInfo(i).IslandPosition,
-            // IslandManager.TotalIslands, Island.IslandPos for current).
+            // islands (verified: IslandManager.GetIslandInfo(i).IslandPosition).
+            // Index convention is probed at runtime (0-based array), so this
+            // adapts whether island ids run 0..N-1 or 1..N. The NEXT island
+            // (game's forward order from current) gets an edge-clamped arrow
+            // so you can sail to it by boat with no radar.
             if (ModState.EspIslands)
             {
-                try
-                {
-                    int total = IslandManager.TotalIslands;
-                    byte cur = 0;
-                    try { cur = OnlineIslandManager.CurIsland; } catch { }
-                    for (int i = 0; i < total; i++)
-                    {
-                        Vector3 ipos;
-                        try { ipos = IslandManager.GetIslandInfo(i).IslandPosition; }
-                        catch { continue; }
-                        if (ipos == Vector3.zero) continue;
-                        float dist = Vector3.Distance(camPos, ipos);
-                        string label = "Island " + (i + 1) + " " + Mathf.RoundToInt(dist) + "m";
-                        if (i + 1 == cur) label = "(*) " + label;
-                        DrawEspMarker(cam, ipos, camPos, width, height, new Color(0.65f, 0.45f, 1f), label);
-                    }
-                }
-                catch { }
+                try { DrawIslandEsp(cam, camPos, width, height); } catch { }
             }
 
             // aimbot crosshair marker
-            if (ModState.AimbotPlayers || ModState.AimbotFish || ModState.AimbotBosses)
+            if (ModState.AimbotPlayers || ModState.AimbotFish || ModState.AimbotBosses || ModState.AimbotBirds)
             {
                 try
                 {
@@ -1628,6 +1762,121 @@ namespace HowToFishModMenu
             GUI.Box(new Rect(x - 3f, y - 3f, 6f, 6f), string.Empty, _espBoxStyle);
             GUI.color = prev;
             GUI.Label(new Rect(x + 8f, y - 8f, 200f, 16f), label, _espLabelStyle);
+        }
+
+        private static int _islandCountCache = -1;
+        private static float _islandCountTime;
+
+        // Runtime probe of how many island infos exist (no convention guess).
+        private static int IslandInfoCount()
+        {
+            if (_islandCountCache >= 0 && Time.time - _islandCountTime < 10f) return _islandCountCache;
+            int n = 0;
+            try
+            {
+                for (int i = 0; i < 32; i++)
+                {
+                    try
+                    {
+                        IslandInfo info = IslandManager.GetIslandInfo(i);
+                        if (info == null) break;
+                        n = i + 1;
+                    }
+                    catch { break; }
+                }
+            }
+            catch { }
+            _islandCountCache = n;
+            _islandCountTime = Time.time;
+            return n;
+        }
+
+        private static Vector3 IslandPositionAt(int index)
+        {
+            try
+            {
+                IslandInfo info = IslandManager.GetIslandInfo(index);
+                if (info != null) return info.IslandPosition;
+            }
+            catch { }
+            return Vector3.zero;
+        }
+
+        // Display number (1-based UI) -> infos index, probed at runtime.
+        private static int IslandDisplayToIndex(int display)
+        {
+            try
+            {
+                IslandInfo info = IslandManager.GetIslandInfo(display);
+                if (info != null) return display;
+            }
+            catch { }
+            return display - 1;
+        }
+
+        // Resolve which infos index is current (matches CurIsland under
+        // either 0-based or 1-based convention).
+        private static int CurrentIslandIndex(int count, int cur)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if (cur == i || cur == i + 1) return i;
+            }
+            return -1;
+        }
+
+        private void DrawIslandEsp(Camera cam, Vector3 camPos, int width, int height)
+        {
+            int count = IslandInfoCount();
+            if (count <= 0) return;
+            int cur = -1;
+            try { cur = OnlineIslandManager.CurIsland; } catch { }
+            int curIdx = cur >= 0 ? CurrentIslandIndex(count, cur) : -1;
+            int nextIdx = curIdx >= 0 ? (curIdx + 1) % count : -1;
+
+            for (int i = 0; i < count; i++)
+            {
+                Vector3 ipos = IslandPositionAt(i);
+                if (ipos == Vector3.zero) continue;
+                float dist = Vector3.Distance(camPos, ipos);
+                if (i == nextIdx)
+                {
+                    DrawEspEdgeMarker(cam, ipos, width, height, new Color(0.3f, 1f, 0.5f),
+                        "NEXT Island " + (i + 1) + " " + Mathf.RoundToInt(dist) + "m");
+                }
+                else
+                {
+                    string label = "Island " + (i + 1) + " " + Mathf.RoundToInt(dist) + "m";
+                    if (i == curIdx) label = "(*) " + label;
+                    DrawEspMarker(cam, ipos, camPos, width, height, new Color(0.65f, 0.45f, 1f), label);
+                }
+            }
+        }
+
+        // Screen-edge-clamped marker: visible even when the target is behind
+        // or off-screen, so you can steer a boat toward it radar-free.
+        private void DrawEspEdgeMarker(Camera cam, Vector3 pos, int width, int height, Color color, string label)
+        {
+            Vector3 to = pos - cam.transform.position;
+            Vector3 s = cam.WorldToScreenPoint(pos + Vector3.up * 3f);
+            float x, y;
+            if (s.z <= 0f)
+            {
+                x = width - s.x;
+                y = 30f;
+            }
+            else
+            {
+                x = s.x;
+                y = height - s.y;
+            }
+            x = Mathf.Clamp(x, 30f, width - 230f);
+            y = Mathf.Clamp(y, 30f, height - 30f);
+            Color prev = GUI.color;
+            GUI.color = color;
+            GUI.Box(new Rect(x - 5f, y - 5f, 10f, 10f), string.Empty, _espBoxStyle);
+            GUI.color = prev;
+            GUI.Label(new Rect(x + 12f, y - 8f, 220f, 16f), label, _espLabelStyle);
         }
 
         private void DrawEspBox(Camera cam, Transform t, Vector3 camPos, int width, int height, Color color, float boxHeight, string label)
@@ -1846,25 +2095,14 @@ namespace HowToFishModMenu
             });
         }
 
-        private static Vector3 IslandPosition(int islandIndex)
-        {
-            try
-            {
-                IslandInfo info = IslandManager.GetIslandInfo(islandIndex);
-                if (info != null) return info.IslandPosition;
-            }
-            catch { }
-            try { return Island.IslandPos; } catch { }
-            return Vector3.zero;
-        }
-
         // MP-safe: self-teleport via Server.TeleportPlayer (verified ServerRPC,
         // RpcLogic has no ownership check). Island SWAP stays host-only.
+        // Display numbers (1..6 buttons) map to infos indices at runtime.
         private static void TeleportMeToIsland(byte island)
         {
             Player p = Player.LocalPlayer;
             if (!p || Server.Instance == null) return;
-            Vector3 pos = IslandPosition(island);
+            Vector3 pos = IslandPositionAt(IslandDisplayToIndex(island));
             if (pos == Vector3.zero) { Log.Warn("[VladMod] Unknown island position"); return; }
             pos += Vector3.up * 2f;
             SafeCall(() => Server.Instance.TeleportPlayer(p, pos, 0f));
@@ -2291,7 +2529,7 @@ namespace HowToFishModMenu
     {
         public readonly CfgEntry<bool> GodMode, InfFullness, InfMoney, InstantCatch, AutoFish, ForceShiny,
             Sunset, BuiltInCheats, InfAmmo, RigRoulette, RigSlots, AutoSell, OneShot, NoBaitLoss, NoCooldown,
-            EspFish, EspPlayers, EspItems, EspIslands, AimPlayers, AimFish, AimBosses, AimSnap;
+            EspFish, EspPlayers, EspItems, EspIslands, AimPlayers, AimFish, AimBosses, AimBirds;
         public readonly CfgEntry<float> Speed, FishSize, Jump, Damage, Water, TickSpeed, AimRange, AimFov;
         public readonly CfgEntry<KeyCode> KeyGod, KeyMoney, KeyCatch, KeyFish, KeyEsp;
 
@@ -2316,10 +2554,10 @@ namespace HowToFishModMenu
             EspPlayers = Cfg.Bind("Toggles", "EspPlayers", false, "ESP overlay: players.");
             EspItems = Cfg.Bind("Toggles", "EspItems", false, "ESP overlay: ground loot.");
             EspIslands = Cfg.Bind("Toggles", "EspIslands", false, "ESP overlay: island positions.");
-            AimPlayers = Cfg.Bind("Toggles", "AimbotPlayers", false, "Auto-hit nearest player (Server RPC).");
-            AimFish = Cfg.Bind("Toggles", "AimbotFish", false, "Auto-hit nearest fish (Server RPC).");
-            AimBosses = Cfg.Bind("Toggles", "AimbotBosses", false, "Auto-hit nearest boss (Server RPC).");
-            AimSnap = Cfg.Bind("Toggles", "AimSoftSnap", false, "Camera eases toward aimbot target.");
+            AimPlayers = Cfg.Bind("Toggles", "AimbotPlayers", false, "Lock camera onto nearest player.");
+            AimFish = Cfg.Bind("Toggles", "AimbotFish", false, "Lock camera onto nearest fish.");
+            AimBosses = Cfg.Bind("Toggles", "AimbotBosses", false, "Lock camera onto nearest boss.");
+            AimBirds = Cfg.Bind("Toggles", "AimbotBirds", false, "Lock camera onto nearest seagull.");
 
             Speed = Cfg.Bind("Sliders", "SpeedMulti", 1f, "Movement speed multiplier.");
             FishSize = Cfg.Bind("Sliders", "FishSizeMulti", 1f, "Fish size multiplier.");
