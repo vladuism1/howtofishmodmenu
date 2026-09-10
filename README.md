@@ -1,6 +1,7 @@
 # 🎣 How to Fish — Mod Menu by Vlad
 
-> Memory-only injector · temporary until restart · press **F1** in-game
+> Memory-only mod menu for the game **How to Fish** · temporary until restart · press **F1** in-game.
+> A PLITCH-style overlay with sidebar, search, cheat cards, ESP and aimbot — solo, host and joiner supported.
 
 ▶ Made by **Vlad** — YouTube: **[@vladuism](https://www.youtube.com/@vladuism)**
 
@@ -11,18 +12,23 @@
 | Tab | What you get |
 |---|---|
 | **Player** | God mode (no damage / no drowning), infinite fullness, speed & jump multipliers, max vitals |
-| **Money** | Infinite money, auto-sell fish, +$99999, all baits free |
-| **Fishing** | Instant catch, auto fish, always shiny, fish size multiplier, duplicate items, creature spawner |
-| **Teleport** | Island jumps, jump to / pull players, damage & one-shot players, revive all |
-| **Weapons** | Infinite ammo, refill, free bullet / attachment / sharpness upgrades, no cooldown |
+| **Money** | Infinite money (kept in multiplayer — free purchases via RPC), auto-sell fish *(host)*, +$99999 *(host)*, all baits free |
+| **Fishing** | Instant catch, auto fish, always shiny, fish size multiplier, duplicate items *(host)*, creature spawner *(host)* |
+| **Teleport** | Island swaps *(host)*, MP-safe self-teleport to any island position, jump to / pull players, damage & one-shot players, revive all |
+| **Weapons** | Infinite ammo, no cooldown, refill, free bullet / attachment / sharpness upgrades, **aimbot for players, fish and bosses** (range + FOV sliders, camera snap) |
 | **Casino** | Rigged roulette + jackpot slots *(host)* |
-| **World** | Damage multiplier, one-shot toggle, ocean level, explosions, boss spawn, kill all, sunset, ESP overlay |
+| **World** | Damage multiplier, one-shot toggle, ocean level, explosions / boss spawn / kill all *(host)*, sunset, ESP overlay (fish, players, loot, **islands**) |
 | **Items** | Item browser (give anything free), unlock all skins, unlock all achievements |
-| **Unlocks** | Boat + radar, grill, inventory pockets, presets, keybind rebinding |
+| **Unlocks** | Boat + radar *(host)*, grill *(host)*, inventory pockets (works in multiplayer), presets, keybind rebinding |
 
-**Host vs joiner:** hosting (or solo) = everything works. Joining someone else's lobby =
-client-side features (god, ESP, instant catch, free-buy RPCs) — the shared money pool
-belongs to the host. FishNet is host-authoritative, that's just how the game works.
+Use the **search bar** at the top of the menu to filter every cheat instantly. The sidebar shows how many cheats are ON per tab.
+
+**Solo / host vs joiner:** singleplayer and hosting = every feature works. Joining someone else's lobby =
+island swaps, money pool edits, spawns, boat/grill unlocks and casino rigging stay host-only
+(FishNet is host-authoritative — the game simply ignores those calls from clients).
+Everything RPC-based keeps working as a joiner: player teleports, damage, aimbot hits,
+free purchases with Infinite Money, pockets, revive, plus client-side features
+(god, ESP, instant catch, ammo).
 
 ---
 
