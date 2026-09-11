@@ -20,6 +20,9 @@
 | **World** | Damage multiplier, one-shot toggle, ocean level, explosions / boss spawn / kill all *(host)*, sunset, ESP overlay (fish, players, loot, **islands**) |
 | **Items** | Item browser (give anything free), unlock all skins, unlock all achievements |
 | **Unlocks** | Boat + radar *(host)*, grill *(host)*, inventory pockets (works in multiplayer), presets, keybind rebinding |
+| **Network** | Multiplayer packet forging with input boxes (chat, bet, boat skin, bait/item/pocket, damage, item worth), transport replay, live item-ID browser, session peers |
+| **Steal** | Force-drop victim inventory, strip held item, vacuum loose loot to you (joiner RPCs) |
+| **Troll** | Fling victims (target leading), steal boat driver seat, jam all radios, explosive rain (joiner RPCs) |
 
 Use the **search bar** at the top of the menu to filter every cheat instantly. The sidebar shows how many cheats are ON per tab.
 
@@ -75,6 +78,7 @@ Or open `HowToFishModMenu.sln` in Visual Studio / VS Code (`Ctrl+Shift+B`).
 howtofish-modmenu/
 ├── Core/                     # the mod — menu, patches, config, logging
 │   ├── ModCore.cs            # entry point, IMGUI menu, auto loops
+│   ├── NetForge.cs           # multiplayer packet forging (Network/Steal/Troll/Casino-joiner)
 │   ├── Patches.cs            # 21 Harmony patches
 │   ├── Deps.cs               # memory-only dependency loader
 │   ├── Items.cs              # item / creature lookups
