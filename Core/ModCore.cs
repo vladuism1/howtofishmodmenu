@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -34,8 +35,14 @@ namespace HowToFishModMenu
         public static bool AimbotFish;         // aim-lock nearest fish/creature
         public static bool AimbotBosses;       // aim-lock nearest boss (BossType != None)
         public static bool AimbotBirds;        // aim-lock nearest seagull (Bird : Creature)
+        public static bool MeleeAuto;          // auto melee-attack/punch the aim-locked target (unchecked RPCs)
+        public static bool Nametags;           // PlayerManager nametags overlay
+        public static bool FriendlyFire;       // ServerSettings friendly fire (host)
+        public static float Fov = 60f;         // camera FOV via PlayerCamera.SetFOV (client)
         public static float AimRange = 60f;    // aimbot max distance in meters
         public static float AimFov = 30f;      // aimbot max angle from crosshair in degrees
+        public static float AimProjectileSpeed = 40f; // projectile m/s for target leading
+        public static float AimSnap = 14f;     // camera snap rate (higher = tighter)
         public static float SpeedMulti = 1f;   // movement speed multiplier
         public static float FishSizeMulti = 1f;// caught/spawned creature size multiplier
         public static float JumpMulti = 1f;    // jump power multiplier
@@ -87,12 +94,12 @@ namespace HowToFishModMenu
         private readonly string[] _plitchTabs =
         {
             "Player", "Money", "Fishing", "Teleport", "Weapons",
-            "Casino", "World", "Items", "Unlocks"
+            "Casino", "World", "Items", "Unlocks", "Network", "Steal", "Troll"
         };
         private readonly string[] _plitchTabSubs =
         {
             "Health / Movement", "Money / Baits", "Catch / Spawn", "Islands / Players",
-            "Ammo / Upgrades", "Host only", "Ocean / ESP", "Browser / Skins", "Boats / Presets"
+            "Ammo / Upgrades", "Host only", "Ocean / ESP", "Browser / Skins", "Boats / Presets", "Packets / RPC", "Loot / Drop", "Fling / Boat / Radio"
         };
         private string _search = string.Empty;
         private Vector2 _contentScroll;
@@ -104,6 +111,27 @@ namespace HowToFishModMenu
         private float _autoFishTimer;
         private float _upkeepTimer;
         private float _autoSellTimer;
+        private string _forgeChatText = "hello";
+        private string _forgeBetStr = "1";
+        private string _forgeSkinStr = "0";
+        private string _forgeItemStr = "0";
+        private string _forgeCostStr = "0";
+        private string _forgeBaitStr = "0";
+        private string _forgePocketStr = "0";
+        private string _forgeMultStr = "100";
+        private int _stealVictim;
+        private int _trollVictim;
+        private string _vacRadiusStr = "30";
+        private string _vacCountStr = "5";
+        private string _flingPowerStr = "50";
+        private string _radioFreqStr = "99.9";
+        private string _casinoBetStr = "1";
+        private string _forgeDmgStr = "9999";
+        private Vector2 _forgeIdScroll;
+        private System.Collections.Generic.List<string> _forgePeers;
+        private Vector2 _forgePeerScroll;
+        private static System.Collections.Generic.List<NetForge.ItemEntry> _forgeIdCache;
+        private static float _forgeIdCacheTime;
 
         // ---- reflection targets ----
         private static FieldInfo _isReelingIn;
@@ -128,6 +156,7 @@ namespace HowToFishModMenu
 
         // ---- ESP caches ----
         private static FieldInfo _aliveCreaturesField;
+        private static FieldInfo _flyingBirdsField;
         private static Texture2D _espOutline;
         private static GUIStyle _espBoxStyle;
         private static GUIStyle _espLabelStyle;
@@ -167,8 +196,15 @@ namespace HowToFishModMenu
                 ModState.AimbotFish = _settings.AimFish.Value;
                 ModState.AimbotBosses = _settings.AimBosses.Value;
                 ModState.AimbotBirds = _settings.AimBirds.Value;
+                ModState.MeleeAuto = _settings.MeleeAuto.Value;
+                ModState.Nametags = _settings.Nametags.Value;
+                try { PlayerManager.ToggleNametags(ModState.Nametags); } catch { }
+                ModState.FriendlyFire = _settings.FriendlyFire.Value;
+                ModState.Fov = _settings.Fov.Value;
                 ModState.AimRange = _settings.AimRange.Value;
                 ModState.AimFov = _settings.AimFov.Value;
+                ModState.AimProjectileSpeed = _settings.ProjSpeed.Value;
+                ModState.AimSnap = _settings.AimSnap.Value;
                 ModState.SpeedMulti = _settings.Speed.Value;
                 ModState.FishSizeMulti = _settings.FishSize.Value;
                 ModState.JumpMulti = _settings.Jump.Value;
@@ -188,6 +224,7 @@ namespace HowToFishModMenu
                 _isReelingOut = AccessTools.Field(typeof(FishingRod), "_isReelingOut");
                 _shinyChance = AccessTools.Field(typeof(CreatureManager), "_shinyCreatureChance");
                 _aliveCreaturesField = AccessTools.Field(typeof(CreatureManager), "_aliveCreatures");
+                _flyingBirdsField = AccessTools.Field(typeof(BirdManager), "_flyingBirds");
                 _maxHealthField = AccessTools.Field(typeof(PlayerVitals), "_maxHealth");
                 _maxFullnessField = AccessTools.Field(typeof(PlayerVitals), "_maxFullness");
                 _dmgMultiField = AccessTools.Field(typeof(ServerSettings), "<DamageMultiplier>k__BackingField");
@@ -279,6 +316,7 @@ namespace HowToFishModMenu
             try { AutoFishLoop(); } catch (Exception e) { Log.Warn("[VladMod] AutoFish error: " + e.Message); }
             try { AutoSellLoop(); } catch (Exception e) { Log.Warn("[VladMod] AutoSell error: " + e.Message); }
             try { AimbotTick(); } catch (Exception e) { Log.Warn("[VladMod] Aimbot error: " + e.Message); }
+            try { MeleeAutoTick(); } catch (Exception e) { Log.Warn("[VladMod] MeleeAuto error: " + e.Message); }
 
             // Slow upkeep: re-apply persistent world changes and shiny chance.
             _upkeepTimer -= Time.deltaTime;
@@ -372,6 +410,8 @@ namespace HowToFishModMenu
         private static NPC _sellerCache;
         private static float _sellerCacheTime;
         private static string _sellerStatus = "Seller: scanning...";
+        private static int _autosellFedTotal;
+        private static string _autosellLast = "idle";
 
         // Nearest NPC owning a Type==1 (money/sell) quest. IDs probed 0..255.
         private NPC FindSellerNpc(Player player)
@@ -390,7 +430,7 @@ namespace HowToFishModMenu
                 {
                     foreach (NPCQuest q in npc.Quests)
                     {
-                        if (q != null && (int)q.Type == 1) { seller = true; break; }
+                        if (q != null && q.Type == QuestType.Money) { seller = true; break; }
                     }
                 }
                 catch { continue; }
@@ -446,11 +486,12 @@ namespace HowToFishModMenu
         {
             NPC seller = null;
             try { seller = FindSellerNpc(player); } catch { return; }
-            if (seller == null || seller.transform == null) return;
-            if (Vector3.Distance(player.Transform.position, seller.transform.position) > 12f) return;
+            if (seller == null || seller.transform == null) { _autosellLast = "no seller on this island"; return; }
+            // No player-distance gate: the item teleports straight to the mouth,
+            // the eat trigger is positional on the item, not on you. Works island-wide.
             Transform mouth = null;
             try { mouth = seller.MouthPosForItems; } catch { }
-            if (mouth == null) return;
+            if (mouth == null) { _autosellLast = "seller has no mouth"; return; }
 
             Item held = player.Holding != null ? player.Holding.HeldItem : null;
             var snapshot = new List<Item>();
@@ -489,6 +530,8 @@ namespace HowToFishModMenu
                 }
                 catch { }
             }
+            if (fed > 0) { _autosellFedTotal += fed; _autosellLast = "fed " + fed + " (total " + _autosellFedTotal + ")"; }
+            else _autosellLast = snapshot.Count == 0 ? "inventory empty" : "nothing sellable (held item skipped)";
         }
 
         private void TeleportToSeller()
@@ -520,17 +563,67 @@ namespace HowToFishModMenu
             {
                 Transform t = FindAimTransform(cam);
                 if (t == null) return;
-                Vector3 aimPos = t.position + Vector3.up * 1f;
+                float h = 1f;
+                try
+                {
+                    if (t.GetComponent<Player>() != null) h = 1.2f;
+                    else h = t.GetComponent<Bird>() != null ? 0.6f : 0.8f;
+                }
+                catch { }
+                Vector3 aimPos = LeadPoint(t, cam.transform.position, h);
                 Vector3 dir = aimPos - cam.transform.position;
                 float range = ModState.AimRange;
                 if (dir.sqrMagnitude > 0.01f && dir.sqrMagnitude < range * range)
                 {
                     Quaternion want = Quaternion.LookRotation(dir.normalized);
-                    cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, want, 0.45f);
+                    float k = 1f - Mathf.Exp(-Mathf.Max(1f, ModState.AimSnap) * Time.deltaTime);
+                    cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, want, k);
                 }
             }
             catch { }
         }
+
+        private static readonly Dictionary<int, Vector3> _aimPrevPos = new Dictionary<int, Vector3>();
+        private static readonly Dictionary<int, Vector3> _aimPrevVel = new Dictionary<int, Vector3>();
+        private static readonly Dictionary<int, float> _aimPrevTime = new Dictionary<int, float>();
+
+        // Target leading: finite-difference velocity per target, aim where it
+        // will be when the projectile arrives (dist / projectile speed).
+#pragma warning disable CS0618
+        private Vector3 LeadPoint(Transform t, Vector3 from, float heightAdd)
+        {
+            Vector3 base_ = t.position + Vector3.up * heightAdd;
+            try
+            {
+                int id = t.GetInstanceID();
+                float now = Time.time;
+                Vector3 vel = Vector3.zero;
+                Vector3 prev;
+                float pt;
+                if (_aimPrevPos.TryGetValue(id, out prev) && _aimPrevTime.TryGetValue(id, out pt))
+                {
+                    float dt = now - pt;
+                    if (dt > 0.0001f && dt < 0.5f)
+                    {
+                        Vector3 inst = (t.position - prev) / dt;
+                        Vector3 sm;
+                        if (!_aimPrevVel.TryGetValue(id, out sm)) sm = inst;
+                        else sm = Vector3.Lerp(sm, inst, 0.5f);
+                        _aimPrevVel[id] = sm;
+                        vel = sm;
+                    }
+                }
+                _aimPrevPos[id] = t.position;
+                _aimPrevTime[id] = now;
+                if (_aimPrevPos.Count > 128) { _aimPrevPos.Clear(); _aimPrevVel.Clear(); _aimPrevTime.Clear(); }
+                float dist = Vector3.Distance(from, base_);
+                float tof = dist / Mathf.Max(1f, ModState.AimProjectileSpeed);
+                if (tof > 2f) tof = 2f;
+                return base_ + vel * tof;
+            }
+            catch { return base_; }
+        }
+#pragma warning restore CS0618
 
         private Player FindAimPlayer(Camera cam, Vector3 from, Vector3 fwd)
         {
@@ -590,22 +683,21 @@ namespace HowToFishModMenu
             return best;
         }
 
-        // Seagulls are Bird : Creature and live in the same _aliveCreatures
-        // list (verified in Assembly-CSharp). Lock-only, like the rest.
+        // Seagulls live in BirdManager._flyingBirds, NOT in
+        // CreatureManager._aliveCreatures (verified) - the old list never had them.
         private Creature FindAimBird(Camera cam, Vector3 from, Vector3 fwd)
         {
-            if (CreatureManager.Instance == null || _aliveCreaturesField == null) return null;
+            if (BirdManager.Instance == null || _flyingBirdsField == null) return null;
             Creature best = null;
             float bestScore = float.MaxValue;
-            var list = _aliveCreaturesField.GetValue(CreatureManager.Instance) as System.Collections.IEnumerable;
+            var list = _flyingBirdsField.GetValue(BirdManager.Instance) as System.Collections.IEnumerable;
             if (list == null) return null;
             foreach (object o in list)
             {
-                var c = o as Creature;
+                var c = o as Bird;
                 if (!c || c == null || c.transform == null) continue;
                 try
                 {
-                    if (!(c is Bird)) continue;
                     if (c.IsDead) continue;
                     Vector3 tp = c.transform.position + Vector3.up * 0.6f;
                     Vector3 to = tp - from;
@@ -619,6 +711,43 @@ namespace HowToFishModMenu
                 catch { }
             }
             return best;
+        }
+
+        private float _meleeTimer;
+        private bool _meleeSide;
+
+        // ------------------------------------------------------------------
+        // Melee auto-attack: swings at the aim-locked transform.
+        // Server.MeleeAttack / Server.Punch RpcLogic has no ownership check
+        // (verified), so this works as host AND client.
+        // ------------------------------------------------------------------
+        private void MeleeAutoTick()
+        {
+            if (!ModState.MeleeAuto) return;
+            Player local = Player.LocalPlayer;
+            if (!local || local.BlockInputs || Server.Instance == null) return;
+            Camera cam = GameInfo.CurCamera != null ? GameInfo.CurCamera : Camera.main;
+            if (!cam) return;
+            _meleeTimer -= Time.deltaTime;
+            if (_meleeTimer > 0f) return;
+            _meleeTimer = 0.5f;
+
+            try
+            {
+                Transform t = FindAimTransform(cam);
+                if (t == null) return;
+                if ((t.position - local.Transform.position).sqrMagnitude > 4.5f * 4.5f) return;
+                _meleeSide = !_meleeSide;
+                bool right = _meleeSide;
+                Vector3 hp = t.position + Vector3.up * 1f;
+                Item held = local.Holding != null ? local.Holding.HeldItem : null;
+                Melee melee = held as Melee;
+                if (melee != null)
+                    SafeCall(() => Server.Instance.MeleeAttack(melee, t, right, hp));
+                else
+                    SafeCall(() => Server.Instance.Punch(local, t, right, hp));
+            }
+            catch { }
         }
 
         private Transform FindAimTransform(Camera cam)
@@ -816,6 +945,10 @@ namespace HowToFishModMenu
                         case 5: DrawCasinoTab(); break;
                         case 6: DrawWorldTab(); break;
                         case 7: DrawItemsTab(); break;
+                        case 8: DrawUnlockTab(); break;
+                        case 9: DrawNetworkTab(); break;
+                        case 10: DrawStealTab(); break;
+                        case 11: DrawTrollTab(); break;
                         default: DrawUnlockTab(); break;
                     }
                 }
@@ -841,10 +974,12 @@ namespace HowToFishModMenu
                 case 2: return (ModState.InstantCatch ? 1 : 0) + (ModState.AutoFish ? 1 : 0) + (ModState.ForceShiny ? 1 : 0);
                 case 3: return 0;
                 case 4: return (ModState.InfiniteAmmo ? 1 : 0) + (ModState.NoCooldown ? 1 : 0)
-                    + (ModState.AimbotPlayers ? 1 : 0) + (ModState.AimbotFish ? 1 : 0) + (ModState.AimbotBosses ? 1 : 0) + (ModState.AimbotBirds ? 1 : 0);
+                    + (ModState.AimbotPlayers ? 1 : 0) + (ModState.AimbotFish ? 1 : 0) + (ModState.AimbotBosses ? 1 : 0) + (ModState.AimbotBirds ? 1 : 0)
+                    + (ModState.MeleeAuto ? 1 : 0);
                 case 5: return (ModState.RigRoulette ? 1 : 0) + (ModState.RigSlots ? 1 : 0);
                 case 6: return (ModState.OneShot ? 1 : 0) + (ModState.Sunset ? 1 : 0) + (ModState.BuiltInCheats ? 1 : 0)
-                    + (ModState.EspFish ? 1 : 0) + (ModState.EspPlayers ? 1 : 0) + (ModState.EspItems ? 1 : 0) + (ModState.EspIslands ? 1 : 0);
+                    + (ModState.EspFish ? 1 : 0) + (ModState.EspPlayers ? 1 : 0) + (ModState.EspItems ? 1 : 0) + (ModState.EspIslands ? 1 : 0)
+                    + (ModState.Nametags ? 1 : 0) + (ModState.FriendlyFire ? 1 : 0);
                 case 7: return 0;
                 default: return 0;
             }
@@ -855,7 +990,7 @@ namespace HowToFishModMenu
             switch (tab)
             {
                 case 0: return 2; case 1: return 2; case 2: return 3; case 3: return 0;
-                case 4: return 6; case 5: return 2; case 6: return 7; default: return 0;
+                case 4: return 7; case 5: return 2; case 6: return 9; default: return 0;
             }
         }
 
@@ -953,6 +1088,8 @@ namespace HowToFishModMenu
             }
             if (PlitchButton("Teleport me to seller (MP-safe)", false))
                 TeleportToSeller();
+            if (ModState.AutoSell)
+                GUILayout.Label("AutoSell: " + _autosellLast, _ui.CardTitle);
             GUILayout.EndVertical();
             GUILayout.Space(6);
 
@@ -997,8 +1134,14 @@ namespace HowToFishModMenu
             if (a != ModState.AutoFish) SetAutoFish(a);
             bool sh = CheatRow("Always Shiny", "Every caught fish gets the rare drip skin", ModState.ForceShiny, "—");
             if (sh != ModState.ForceShiny) { ModState.ForceShiny = sh; _settings.ForceShiny.Value = sh; }
+            bool nb = CheatRow("No Bait Loss", "Bait survives every catch", ModState.NoBaitLoss, null);
+            if (nb != ModState.NoBaitLoss) { ModState.NoBaitLoss = nb; _settings.NoBaitLoss.Value = nb; }
 
             PlitchSlider(_settings.FishSize, ref ModState.FishSizeMulti, 0.5f, 10f, "Fish Size", "x");
+
+            if (PlitchButton("Max-cook held item (MP)", false))
+                MaxCookHeld();
+            GUILayout.Space(6);
 
             bool canDup = IsHost();
             bool dupWas = GUI.enabled;
@@ -1142,7 +1285,15 @@ namespace HowToFishModMenu
             bool ad = CheatRow("Aimbot Seagulls", "Camera locks onto nearest seagull", ModState.AimbotBirds, null);
             if (ad != ModState.AimbotBirds) { ModState.AimbotBirds = ad; _settings.AimBirds.Value = ad; }
             PlitchSlider(_settings.AimRange, ref ModState.AimRange, 10f, 150f, "Aim Range", "m");
-            PlitchSlider(_settings.AimFov, ref ModState.AimFov, 5f, 90f, "Aim FOV", "°");
+            PlitchSlider(_settings.AimFov, ref ModState.AimFov, 5f, 90f, "Aim FOV", "deg");
+            PlitchSlider(_settings.ProjSpeed, ref ModState.AimProjectileSpeed, 5f, 150f, "Projectile Speed", "m/s");
+            PlitchSlider(_settings.AimSnap, ref ModState.AimSnap, 4f, 30f, "Aim Snap", "");
+            bool ma = CheatRow("Melee Auto-Attack", "Auto punch/melee the locked target (MP)", ModState.MeleeAuto, null);
+            if (ma != ModState.MeleeAuto) { ModState.MeleeAuto = ma; _settings.MeleeAuto.Value = ma; }
+
+            if (PlitchButton("Detonate all explosives (MP)", false))
+                DetonateAll();
+            GUILayout.Space(6);
 
             Player p = Player.LocalPlayer;
             if (!p || p.Holding == null || p.Holding.HeldItem == null)
@@ -1211,6 +1362,19 @@ namespace HowToFishModMenu
             if (s != ModState.RigSlots) { ModState.RigSlots = s; _settings.RigSlots.Value = s; }
 
             GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("JOINER (no host needed)", _ui.CardDesc);
+            GUILayout.Label("Bet color 0=Black 1=Red 2=Green", _ui.CardDesc);
+            _casinoBetStr = GUILayout.TextField(_casinoBetStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Place bet", false))
+                SafeCall(() => { byte b; if (byte.TryParse((_casinoBetStr ?? string.Empty).Trim(), out b)) NetForge.ForgeBet(b); else Log.Warn("[Forge] bad bet value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Ball spoof is visual only - payout stays host-side.", _ui.CardDesc);
+            if (PlitchButton("Spoof ball to me", false))
+                SafeCall(() => NetForge.ForgeRouletteBall());
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
             GUILayout.Label("HOW IT WORKS", _ui.CardDesc);
             GUILayout.Label("Roulette: host picks winning color — we force it to your bet. Slots: cheat-skin hook feeds a legendary item so jackpot always hits.", _ui.CardDesc);
             GUILayout.Label("Works only when you host the lobby.", _ui.CardTitle);
@@ -1264,6 +1428,39 @@ namespace HowToFishModMenu
             GUILayout.EndVertical();
             GUILayout.Space(6);
 
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("BOSS / GAME  (MP-TRY)", _ui.CardDesc);
+            if (PlitchButton("Kill current boss (MP-try)", false))
+                KillBoss();
+            GUILayout.Space(6);
+            if (PlitchButton(IsHost() ? "Finish game (host)" : "Finish game (MP: island 5 only)", false))
+                FinishGameButton();
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            bool ff = CheatRow("Friendly Fire", "ServerSettings friendly fire (host)", ModState.FriendlyFire, null);
+            if (ff != ModState.FriendlyFire)
+            {
+                ModState.FriendlyFire = ff; _settings.FriendlyFire.Value = ff;
+                try { if (IsHost() && ServerSettings.Instance) ServerSettings.Instance.ToggleFriendlyFire(ff); } catch { }
+            }
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("DIFFICULTY  (HOST)", _ui.CardDesc);
+            GUILayout.BeginHorizontal();
+            bool dWas = GUI.enabled;
+            GUI.enabled = IsHost();
+            if (GUILayout.Button("Easy", _ui.Btn, GUILayout.Height(26)))
+                SafeCall(() => ServerSettings.Instance.SetDifficulty(Difficulty.Easy));
+            if (GUILayout.Button("Normal", _ui.Btn, GUILayout.Height(26)))
+                SafeCall(() => ServerSettings.Instance.SetDifficulty(Difficulty.Default));
+            if (GUILayout.Button("Hard", _ui.BtnAccent, GUILayout.Height(26)))
+                SafeCall(() => ServerSettings.Instance.SetDifficulty(Difficulty.Hard));
+            GUI.enabled = dWas;
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
             bool sun = CheatRow("Force Sunset", "Sunset atmosphere override", ModState.Sunset, "—");
             if (sun != ModState.Sunset) SetSunset(sun);
             bool ch = CheatRow("Dev Cheats", "Built-in cheats: M/N money, O island", ModState.BuiltInCheats, "—");
@@ -1278,6 +1475,30 @@ namespace HowToFishModMenu
             if (ei != ModState.EspItems) { ModState.EspItems = ei; _settings.EspItems.Value = ei; }
             bool esl = CheatRow("ESP Islands", "Markers to every island position (IslandManager)", ModState.EspIslands, _settings.KeyEsp.Value.ToString());
             if (esl != ModState.EspIslands) { ModState.EspIslands = esl; _settings.EspIslands.Value = esl; }
+            bool nt = CheatRow("Nametags", "Player name tags overlay", ModState.Nametags, null);
+            if (nt != ModState.Nametags)
+            {
+                ModState.Nametags = nt; _settings.Nametags.Value = nt;
+                try { PlayerManager.ToggleNametags(nt); } catch { }
+            }
+
+            SubHeader("Camera");
+            if (!FovInit)
+            {
+                FovInit = true;
+                try
+                {
+                    Camera cc = GameInfo.CurCamera != null ? GameInfo.CurCamera : Camera.main;
+                    if (cc != null) { ModState.Fov = cc.fieldOfView; _settings.Fov.Value = ModState.Fov; }
+                }
+                catch { }
+            }
+            float oldFov = ModState.Fov;
+            PlitchSlider(_settings.Fov, ref ModState.Fov, 30f, 120f, "FOV", "");
+            if (!Mathf.Approximately(oldFov, ModState.Fov))
+            {
+                try { PlayerCamera.SetFOV(ModState.Fov); } catch { }
+            }
 
             SubHeader("Tick Speed  (experimental)");
             float oldTick = ModState.TickSpeed;
@@ -1429,6 +1650,10 @@ namespace HowToFishModMenu
             hits += SearchCheat(q, "Aimbot Fish", "Weapons — lock onto fish", ModState.AimbotFish, v => { ModState.AimbotFish = v; _settings.AimFish.Value = v; }, null);
             hits += SearchCheat(q, "Aimbot Bosses", "Weapons — lock onto bosses", ModState.AimbotBosses, v => { ModState.AimbotBosses = v; _settings.AimBosses.Value = v; }, null);
             hits += SearchCheat(q, "Aimbot Seagulls", "Weapons — lock onto seagulls", ModState.AimbotBirds, v => { ModState.AimbotBirds = v; _settings.AimBirds.Value = v; }, null);
+            hits += SearchCheat(q, "Melee Auto-Attack", "Weapons — auto melee locked target (MP)", ModState.MeleeAuto, v => { ModState.MeleeAuto = v; _settings.MeleeAuto.Value = v; }, null);
+            hits += SearchCheat(q, "No Bait Loss", "Fishing — bait survives catches", ModState.NoBaitLoss, v => { ModState.NoBaitLoss = v; _settings.NoBaitLoss.Value = v; }, null);
+            hits += SearchCheat(q, "Nametags", "World — player name tags", ModState.Nametags, v => { ModState.Nametags = v; _settings.Nametags.Value = v; }, null);
+            hits += SearchCheat(q, "Friendly Fire", "World — friendly fire (host)", ModState.FriendlyFire, v => { ModState.FriendlyFire = v; _settings.FriendlyFire.Value = v; try { if (IsHost() && ServerSettings.Instance) ServerSettings.Instance.ToggleFriendlyFire(v); } catch { } }, null);
             if (hits == 0)
                 GUILayout.Label("No cheats match \"" + _search + "\".", _ui.LabelDim);
             // (scroll closed centrally)
@@ -1441,6 +1666,294 @@ namespace HowToFishModMenu
             bool nv = CheatRow(title, desc, value, hotkey ?? "—");
             if (nv != value) set(nv);
             return 1;
+        }
+
+        private void DrawNetworkTab()
+        {
+            PlitchSection("Network", "Multiplayer packet forging (FishNet ServerRpc)");
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("STATUS", _ui.CardDesc);
+            GUILayout.Label(NetForge.StatusLine(), _ui.CardTitle);
+            GUILayout.Label("HEAD " + NetForge.LastHeadHex(), _ui.CardDesc);
+            GUILayout.Label(IsHost() ? "Role: HOST (server)" : (IsClient() ? "Role: CLIENT (forges go to host)" : "Role: IDLE - join a lobby first"), _ui.CardDesc);
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("SESSION PEERS", _ui.CardDesc);
+            GUILayout.Label("Host sees connection endpoints. Joiner sees players (names already shown in-game). Relay lobbies hide IPs.", _ui.CardDesc);
+            if (PlitchButton("Refresh peers", false))
+                SafeCall(() => { _forgePeers = NetForge.GetSessionPeers(); });
+            if (_forgePeers != null)
+            {
+                _forgePeerScroll = GUILayout.BeginScrollView(_forgePeerScroll, GUILayout.Height(120));
+                foreach (string line in _forgePeers)
+                    GUILayout.Label(line, _ui.CardDesc);
+                GUILayout.EndScrollView();
+            }
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("FORGE  (MP)", _ui.CardDesc);
+            GUILayout.Label("Chat text", _ui.CardDesc);
+            _forgeChatText = GUILayout.TextField(_forgeChatText ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge chat", false))
+                SafeCall(() => NetForge.ForgeChat(_forgeChatText));
+            GUILayout.Space(6);
+            GUILayout.Label("Bet color 0=Black 1=Red 2=Green", _ui.CardDesc);
+            _forgeBetStr = GUILayout.TextField(_forgeBetStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge bet", false))
+                SafeCall(() => { byte b; if (byte.TryParse((_forgeBetStr ?? string.Empty).Trim(), out b)) NetForge.ForgeBet(b); else Log.Warn("[Forge] bad bet value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Boat skin index 0-2", _ui.CardDesc);
+            _forgeSkinStr = GUILayout.TextField(_forgeSkinStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge boat skin", false))
+                SafeCall(() => { byte s; if (byte.TryParse((_forgeSkinStr ?? string.Empty).Trim(), out s)) NetForge.ForgeSkin(s); else Log.Warn("[Forge] bad skin value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Bait index + cost", _ui.CardDesc);
+            GUILayout.BeginHorizontal();
+            _forgeBaitStr = GUILayout.TextField(_forgeBaitStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            _forgeCostStr = GUILayout.TextField(_forgeCostStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            GUILayout.EndHorizontal();
+            if (PlitchButton("Forge buy bait", false))
+                SafeCall(() => { byte bi; int cost; if (byte.TryParse((_forgeBaitStr ?? string.Empty).Trim(), out bi) && int.TryParse((_forgeCostStr ?? string.Empty).Trim(), out cost)) NetForge.ForgeBuyBait(bi, cost); else Log.Warn("[Forge] bad bait/cost values"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Item ID (see list below, free)", _ui.CardDesc);
+            _forgeItemStr = GUILayout.TextField(_forgeItemStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge buy item", false))
+                SafeCall(() => { byte id; if (byte.TryParse((_forgeItemStr ?? string.Empty).Trim(), out id)) NetForge.ForgeBuyItem(id); else Log.Warn("[Forge] bad item value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Pocket slot", _ui.CardDesc);
+            _forgePocketStr = GUILayout.TextField(_forgePocketStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge unlock pocket", false))
+                SafeCall(() => { byte s; if (byte.TryParse((_forgePocketStr ?? string.Empty).Trim(), out s)) NetForge.ForgeUnlockPocket(s); else Log.Warn("[Forge] bad pocket value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Worth multiplier (hold a fish, then sell it)", _ui.CardDesc);
+            _forgeMultStr = GUILayout.TextField(_forgeMultStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge item worth", false))
+                SafeCall(() => { float m; if (float.TryParse((_forgeMultStr ?? string.Empty).Trim(), out m)) NetForge.ForgeItemMultiplier(m); else Log.Warn("[Forge] bad multiplier value"); });
+            GUILayout.Space(6);
+            GUILayout.Label("Damage amount", _ui.CardDesc);
+            _forgeDmgStr = GUILayout.TextField(_forgeDmgStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Forge combat (nearest)", false))
+                SafeCall(() => { int d; if (int.TryParse((_forgeDmgStr ?? string.Empty).Trim(), out d)) NetForge.ForgeCombat(d); else Log.Warn("[Forge] bad damage value"); });
+            GUILayout.Space(6);
+            if (PlitchButton("Replay last C->S mutated", false))
+                SafeCall(() => NetForge.ReplayLast());
+            GUILayout.Space(6);
+            GUILayout.Label("Floods host with exception + alloc-heavy RPCs. Usually lags the lobby out. Will tank your FPS too.", _ui.CardDesc);
+            if (PlitchButton("Crash server (flood)", true))
+                SafeCall(() => NetForge.CrashServer());
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("EVERY ITEM ID", _ui.CardDesc);
+            if (_forgeIdCache == null || UnityEngine.Time.realtimeSinceStartup - _forgeIdCacheTime > 30f)
+            {
+                SafeCall(() => { _forgeIdCache = NetForge.GetAllItemIds(); _forgeIdCacheTime = UnityEngine.Time.realtimeSinceStartup; });
+            }
+            if (_forgeIdCache != null)
+            {
+                GUILayout.Label(_forgeIdCache.Count + " buyable IDs", _ui.CardTitle);
+                _forgeIdScroll = GUILayout.BeginScrollView(_forgeIdScroll, GUILayout.Height(180));
+                foreach (NetForge.ItemEntry e in _forgeIdCache)
+                    GUILayout.Label(e.Id + " : " + e.Name, _ui.CardDesc);
+                GUILayout.EndScrollView();
+            }
+            else
+            {
+                GUILayout.Label("Join a lobby first - IDs resolve from game data.", _ui.CardDesc);
+            }
+            if (PlitchButton("Write full list to log", false))
+                SafeCall(() => NetForge.DumpItemIdsToLog());
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("HOW IT WORKS", _ui.CardDesc);
+            GUILayout.Label("Calls Server.Instance ServerRpcs directly so FishNet serializes them like legit packets. F12-style replay re-injects the last transport blob via Transport.SendToServer.", _ui.CardDesc);
+            GUILayout.EndVertical();
+        }
+
+        private Player PickVictim(ref int idx)
+        {
+            Player me = Player.LocalPlayer;
+#pragma warning disable CS0618
+            Player[] all = UnityEngine.Object.FindObjectsOfType<Player>();
+#pragma warning restore CS0618
+            List<Player> list = new List<Player>();
+            foreach (Player p in all) { if (p != null && p != me) list.Add(p); }
+            if (list.Count == 0) { GUILayout.Label("No other players in lobby.", _ui.LabelDim); return null; }
+            idx = Mathf.Clamp(idx, 0, list.Count - 1);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("<", _ui.StepBtn, GUILayout.Width(30), GUILayout.Height(24))) idx = (idx - 1 + list.Count) % list.Count;
+            string nm = "?";
+            try { nm = list[idx].SteamName; } catch { try { nm = list[idx].name; } catch { } }
+            GUILayout.Label("Target: " + nm + " (" + (idx + 1) + "/" + list.Count + ")", _ui.CardTitle, GUILayout.ExpandWidth(true));
+            if (GUILayout.Button(">", _ui.StepBtn, GUILayout.Width(30), GUILayout.Height(24))) idx = (idx + 1) % list.Count;
+            GUILayout.EndHorizontal();
+            return list[idx];
+        }
+
+        private void DrawStealTab()
+        {
+            PlitchSection("Steal", "Drop / Strip / Vacuum (joiner RPCs)");
+            Player v = PickVictim(ref _stealVictim);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("VICTIM LOOT", _ui.CardDesc);
+            if (PlitchButton("Force-drop victim inventory", false))
+                SafeCall(() =>
+                {
+                    if (v == null || v.transform == null || Server.Instance == null) { Log.Warn("[Steal] no target"); return; }
+                    Server.Instance.DropAllItems(v, v.transform.position, v.transform.rotation);
+                    Log.Info("[Steal] DropAllItems on " + v.name);
+                });
+            GUILayout.Space(6);
+            if (PlitchButton("Strip victim held item", false))
+                SafeCall(() =>
+                {
+                    if (v == null || Server.Instance == null) { Log.Warn("[Steal] no target"); return; }
+                    Item held = null;
+                    try { held = v.Holding != null ? v.Holding.HeldItem : null; } catch { }
+                    if (held == null) { Log.Warn("[Steal] victim holds nothing"); return; }
+                    Server.Instance.RemoveItemFromInventory(v, held);
+                    Log.Info("[Steal] stripped " + held.name + " from " + v.name);
+                });
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("VACUUM LOOSE LOOT TO ME", _ui.CardDesc);
+            GUILayout.BeginHorizontal();
+            _vacRadiusStr = GUILayout.TextField(_vacRadiusStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            _vacCountStr = GUILayout.TextField(_vacCountStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            GUILayout.EndHorizontal();
+            GUILayout.Label("radius m / max items", _ui.CardDesc);
+            if (PlitchButton("Vacuum loot", false))
+                SafeCall(() =>
+                {
+                    float r; int m;
+                    if (!float.TryParse((_vacRadiusStr ?? string.Empty).Trim(), out r) || !int.TryParse((_vacCountStr ?? string.Empty).Trim(), out m)) { Log.Warn("[Steal] bad radius/count"); return; }
+                    VacuumLoot(r, m);
+                });
+            GUILayout.EndVertical();
+        }
+
+        private static void VacuumLoot(float radius, int max)
+        {
+            Player me = Player.LocalPlayer;
+            if (me == null || me.transform == null || Server.Instance == null) return;
+            if (radius < 1f) radius = 1f;
+            if (max < 1) max = 1;
+            if (max > 30) max = 30;
+            Vector3 dst = me.transform.position + Vector3.up;
+            FishNet.Connection.NetworkConnection con = null;
+            try { con = FishNet.InstanceFinder.ClientManager.Connection; } catch { }
+#pragma warning disable CS0618
+            Item[] items = UnityEngine.Object.FindObjectsOfType<Item>();
+#pragma warning restore CS0618
+            int moved = 0;
+            foreach (Item it in items.OrderBy(x => { try { return Vector3.Distance(me.transform.position, x.transform.position); } catch { return float.MaxValue; } }))
+            {
+                if (moved >= max) break;
+                if (it == null || it.transform == null) continue;
+                try { if (it.SyncedHolder != null) continue; } catch { continue; }
+                float d;
+                try { d = Vector3.Distance(me.transform.position, it.transform.position); } catch { continue; }
+                if (d > radius) continue;
+                try
+                {
+                    Server.Instance.HandOverItemSimulation(it);
+                    Server.Instance.UpdateItemPosRot(it, con, dst, Quaternion.identity, false, new float[0], new Quaternion[0], FishNet.Transporting.Channel.Reliable);
+                    moved++;
+                }
+                catch { }
+            }
+            Log.Info("[Steal] vacuum moved " + moved + " items");
+        }
+
+        private void DrawTrollTab()
+        {
+            PlitchSection("Troll", "Fling / Boat / Radio / Boom (joiner RPCs)");
+            Player v = PickVictim(ref _trollVictim);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("FLING (1 dmg + force)", _ui.CardDesc);
+            _flingPowerStr = GUILayout.TextField(_flingPowerStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Fling victim", false))
+                SafeCall(() =>
+                {
+                    if (v == null || v.transform == null || Server.Instance == null) { Log.Warn("[Troll] no target"); return; }
+                    Player me = Player.LocalPlayer;
+                    float power;
+                    if (!float.TryParse((_flingPowerStr ?? string.Empty).Trim(), out power)) { Log.Warn("[Troll] bad power"); return; }
+                    if (power < 1f) power = 1f;
+                    if (power > 500f) power = 500f;
+                    Vector3 dir = Vector3.forward;
+                    try
+                    {
+                        if (me != null && me.transform != null)
+                        {
+                            dir = v.transform.position - me.transform.position;
+                            dir.y = 0f;
+                            if (dir.sqrMagnitude < 0.01f) dir = Vector3.forward;
+                            dir = dir.normalized;
+                        }
+                    }
+                    catch { }
+                    Vector3 force = dir * power + Vector3.up * power * 0.5f;
+                    Server.Instance.HitPlayer(v, 1, force, v.transform.position, (byte)DamageType.Generic, null);
+                    Log.Info("[Troll] flung " + v.name + " power=" + power);
+                });
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("BOAT", _ui.CardDesc);
+            if (PlitchButton("Steal boat (driver = me)", false))
+                SafeCall(() =>
+                {
+                    if (BoatManager.Boat == null) { Log.Warn("[Troll] no boat spawned"); return; }
+                    Player me = Player.LocalPlayer;
+                    if (me == null || Server.Instance == null) return;
+                    Server.Instance.SetDriver(me);
+                    Log.Info("[Troll] boat driver set to me");
+                });
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("RADIO JAM", _ui.CardDesc);
+            _radioFreqStr = GUILayout.TextField(_radioFreqStr ?? string.Empty, _ui.Search, GUILayout.Height(26));
+            if (PlitchButton("Jam all radios", false))
+                SafeCall(() =>
+                {
+                    float f;
+                    if (!float.TryParse((_radioFreqStr ?? string.Empty).Trim(), out f)) { Log.Warn("[Troll] bad frequency"); return; }
+                    if (Server.Instance == null) return;
+#pragma warning disable CS0618
+                    Radio[] radios = UnityEngine.Object.FindObjectsOfType<Radio>();
+#pragma warning restore CS0618
+                    int n = 0;
+                    foreach (Radio r in radios)
+                    {
+                        if (r == null) continue;
+                        try { Server.Instance.SetRadioFrequency(r, f); n++; } catch { }
+                    }
+                    Log.Info("[Troll] jammed " + n + " radios to " + f);
+                });
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+
+            GUILayout.BeginVertical(_ui.Card);
+            GUILayout.Label("BOOM", _ui.CardDesc);
+            if (PlitchButton("Explosive rain (all dynamite)", true))
+                DetonateAll();
+            GUILayout.EndVertical();
         }
 
         private void DrawUnlockTab()
@@ -1463,6 +1976,9 @@ namespace HowToFishModMenu
             if (PlitchButton(uhost ? "Unlock grill (host)" : "Unlock grill (HOST ONLY)", false))
                 SafeCall(() => NPCManager.UnlockGrill());
             GUI.enabled = true;
+            GUILayout.Space(6);
+            if (PlitchButton("Claim NPC quest rewards (MP)", false))
+                ClaimNpcRewards();
             GUILayout.Space(6);
             if (PlitchButton("Unlock all inventory pockets (MP-safe RPC)", false))
                 UnlockPockets();
@@ -1766,6 +2282,7 @@ namespace HowToFishModMenu
 
         private static int _islandCountCache = -1;
         private static float _islandCountTime;
+        private static bool FovInit;
 
         // Runtime probe of how many island infos exist (no convention guess).
         private static int IslandInfoCount()
@@ -2064,6 +2581,110 @@ namespace HowToFishModMenu
             SafeCall(() => Server.Instance.HitPlayer(target, damage, Vector3.zero, Vector3.zero, (byte)DamageType.Generic, null));
         }
 
+        // Remote-detonate every explosive in the world. Server.ActivateExplosive
+        // RpcLogic has no ownership check (verified) — works as client.
+        private static void DetonateAll()
+        {
+            if (Server.Instance == null || ItemManager.Items == null) return;
+            uint tick = 0;
+            try { tick = FishNet.InstanceFinder.TimeManager.Tick; } catch { }
+            Player me = Player.LocalPlayer;
+            SafeCall(() =>
+            {
+                foreach (var kv in ItemManager.Items)
+                {
+                    Item it = kv.Value;
+                    if (!it || it == null) continue;
+                    Explosive ex = null;
+                    try { ex = it.Explosive; } catch { continue; }
+                    if (!ex || ex == null) continue;
+                    try { Server.Instance.ActivateExplosive(ex, tick, true, true, me); } catch { }
+                }
+            });
+        }
+
+        // Same LocalHit pattern as the game's own UseKillBossCommand
+        // (verified): 999999 melee hit on the current boss.
+        private static void KillBoss()
+        {
+            Player me = Player.LocalPlayer;
+            if (me == null) return;
+            Creature boss = null;
+            try { boss = BossManager.Boss; } catch { return; }
+            if (!boss || boss == null || boss.transform == null) return;
+            Vector3 bp = boss.transform.position;
+            SafeCall(() => boss.LocalHit(boss.transform, bp, Vector3.up, me, 999999, false, Vector3.zero, false));
+        }
+
+        // Host: direct finish. Client: server accepts SendFinishGame only on
+        // island index 4 (verified RpcLogic) — otherwise a no-op.
+        private static void FinishGameButton()
+        {
+            if (IsHost())
+            {
+                SafeCall(() => { if (EndGameManager.Instance) EndGameManager.Instance.FinishGameInput(); });
+                return;
+            }
+            if (Server.Instance == null) return;
+            int cur = -1;
+            try { cur = OnlineIslandManager.CurIsland; } catch { return; }
+            if (cur != 4) { Log.Warn("[VladMod] Finish game as client needs island 5"); return; }
+            SafeCall(() => Server.Instance.SendFinishGame());
+        }
+
+        // Claim showing NPC quest rewards. Server.TakeItemFromNpc RpcLogic has
+        // no owner check (verified): GiveBait/UnlockGrill/UnlockIsland/
+        // UnlockBoat/FinalBoss rewards granted to whoever asks.
+        private static void ClaimNpcRewards()
+        {
+            Player me = Player.LocalPlayer;
+            if (me == null || Server.Instance == null) return;
+            SafeCall(() =>
+            {
+                for (int i = 0; i < 255; i++)
+                {
+                    NPC npc = null;
+                    try { npc = NPCManager.IDToNpc((byte)i); } catch { continue; }
+                    if (!npc || npc == null) continue;
+                    NPCQuest showing = null;
+                    try { if (NPCManager.Instance) showing = NPCManager.Instance.GetShowingQuest((byte)i); } catch { continue; }
+                    if (showing == null) continue;
+                    int t = -1;
+                    try { t = (int)showing.Type; } catch { continue; }
+                    if (t == (int)QuestType.GiveBait || t == (int)QuestType.UnlockGrill ||
+                        t == (int)QuestType.UnlockIsland || t == (int)QuestType.UnlockBoat ||
+                        t == (int)QuestType.FinalBoss || t == (int)QuestType.Money)
+                    {
+                        try { Server.Instance.TakeItemFromNpc(me, (byte)i); } catch { }
+                    }
+                }
+            });
+        }
+
+        // Max out cookness on the held item. Host: direct CookItem.
+        // Client: GrillItemInLava RPC (verified unchecked, stops at >1).
+        private static void MaxCookHeld()
+        {
+            Player p = Player.LocalPlayer;
+            if (!p || p.Holding == null) return;
+            Item held = null;
+            try { held = p.Holding.HeldItem; } catch { return; }
+            if (!held || held == null) return;
+            if (IsHost())
+            {
+                SafeCall(() => held.CookItem(999f));
+                return;
+            }
+            if (Server.Instance == null) return;
+            for (int i = 0; i < 4; i++)
+            {
+                float c = 0f;
+                try { c = held.Cookness; } catch { break; }
+                if (c > 1f) break;
+                SafeCall(() => Server.Instance.GrillItemInLava(held));
+            }
+        }
+
         private static void SkipIntroTutorial()
         {
             Player p = Player.LocalPlayer;
@@ -2123,21 +2744,78 @@ namespace HowToFishModMenu
         {
             SafeCall(() =>
             {
-                foreach (string name in new[]
+                // 1) NPC outfits (needs SkinManager alive - join an island first).
+                int outfits = 0;
+                try
                 {
-                    "UnlockLighthouseKeeper", "UnlockSwampMan", "UnlockSwampLady", "UnlockKioskLady",
-                    "UnlockTourist", "UnlockGrillmaster", "UnlockAndrei", "UnlockJacob",
-                    "UnlockGunStoreClerc", "UnlockScaredGuyInShorts", "UnlockStoreGradma",
-                    "UnlockMilitary", "UnlockScientist", "UnlockBean"
-                })
-                {
+                    object inst = null;
                     try
                     {
-                        var m = AccessTools.Method(typeof(SkinManager), name);
-                        if (m != null) m.Invoke(null, null);
+                        var f = AccessTools.Field(typeof(SkinManager), "_instance");
+                        if (f != null) inst = f.GetValue(null);
+                    }
+                    catch { }
+                    if (inst == null) { Log.Warn("[VladMod] Skins: SkinManager not ready - join an island first"); }
+                    else
+                    {
+                        foreach (string name in new[]
+                        {
+                            "UnlockLighthouseKeeper", "UnlockSwampMan", "UnlockSwampLady", "UnlockKioskLady",
+                            "UnlockTourist", "UnlockGrillmaster", "UnlockAndrei", "UnlockJacob",
+                            "UnlockGunStoreClerc", "UnlockScaredGuyInShorts", "UnlockStoreGradma",
+                            "UnlockMilitary", "UnlockScientist", "UnlockBean"
+                        })
+                        {
+                            try
+                            {
+                                var m = AccessTools.Method(typeof(SkinManager), name);
+                                if (m != null) { m.Invoke(null, null); outfits++; }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+                // 2) Item + boat skins via save data (same as the dev /allskins command).
+                int skins = 0;
+                try
+                {
+                    SaveManager.LockAllSkins();
+                    Item[] arr = null;
+                    try { arr = GameInfo.ItemWithSkinsforCommands; } catch { }
+                    if (arr != null)
+                    {
+                        foreach (Item it in arr)
+                        {
+                            if (!it) continue;
+                            SkinPreset sp = null;
+                            int n = 0;
+                            byte id = 0;
+                            try { sp = it.SkinPreset; } catch { continue; }
+                            if (sp == null) continue;
+                            try { n = sp.Skins.Count; } catch { continue; }
+                            try { id = it.ID; } catch { continue; }
+                            for (int s = 0; s < n && s < 255; s++)
+                            {
+                                try { SaveManager.UnlockSkin(id, (byte)s); skins++; } catch { }
+                            }
+                        }
+                    }
+                    try
+                    {
+                        if (BoatManager.Boat != null && BoatManager.Boat.SkinPreset != null)
+                        {
+                            int n = BoatManager.Boat.SkinPreset.Skins.Count;
+                            for (int s = 0; s < n && s < 255; s++)
+                            {
+                                try { SaveManager.UnlockSkin(255, (byte)s); skins++; } catch { }
+                            }
+                        }
                     }
                     catch { }
                 }
+                catch (Exception e) { Log.Warn("[VladMod] Skins: " + e.Message); }
+                Log.Info("[VladMod] Skins unlocked: outfits=" + outfits + " item/boat=" + skins);
             });
         }
 
@@ -2529,8 +3207,9 @@ namespace HowToFishModMenu
     {
         public readonly CfgEntry<bool> GodMode, InfFullness, InfMoney, InstantCatch, AutoFish, ForceShiny,
             Sunset, BuiltInCheats, InfAmmo, RigRoulette, RigSlots, AutoSell, OneShot, NoBaitLoss, NoCooldown,
-            EspFish, EspPlayers, EspItems, EspIslands, AimPlayers, AimFish, AimBosses, AimBirds;
-        public readonly CfgEntry<float> Speed, FishSize, Jump, Damage, Water, TickSpeed, AimRange, AimFov;
+            EspFish, EspPlayers, EspItems, EspIslands, AimPlayers, AimFish, AimBosses, AimBirds,
+            MeleeAuto, Nametags, FriendlyFire;
+        public readonly CfgEntry<float> Speed, FishSize, Jump, Damage, Water, TickSpeed, AimRange, AimFov, ProjSpeed, AimSnap, Fov;
         public readonly CfgEntry<KeyCode> KeyGod, KeyMoney, KeyCatch, KeyFish, KeyEsp;
 
         public Settings()
@@ -2558,6 +3237,9 @@ namespace HowToFishModMenu
             AimFish = Cfg.Bind("Toggles", "AimbotFish", false, "Lock camera onto nearest fish.");
             AimBosses = Cfg.Bind("Toggles", "AimbotBosses", false, "Lock camera onto nearest boss.");
             AimBirds = Cfg.Bind("Toggles", "AimbotBirds", false, "Lock camera onto nearest seagull.");
+            MeleeAuto = Cfg.Bind("Toggles", "MeleeAuto", false, "Auto melee-attack the locked target.");
+            Nametags = Cfg.Bind("Toggles", "Nametags", false, "Player name tags overlay.");
+            FriendlyFire = Cfg.Bind("Toggles", "FriendlyFire", false, "Server friendly fire (host).");
 
             Speed = Cfg.Bind("Sliders", "SpeedMulti", 1f, "Movement speed multiplier.");
             FishSize = Cfg.Bind("Sliders", "FishSizeMulti", 1f, "Fish size multiplier.");
@@ -2567,6 +3249,9 @@ namespace HowToFishModMenu
             TickSpeed = Cfg.Bind("Sliders", "TickSpeed", 1f, "Tick-based timer speed (experimental).");
             AimRange = Cfg.Bind("Sliders", "AimRange", 60f, "Aimbot max distance in meters.");
             AimFov = Cfg.Bind("Sliders", "AimFov", 30f, "Aimbot max angle from crosshair.");
+            ProjSpeed = Cfg.Bind("Sliders", "ProjSpeed", 40f, "Projectile m/s for aimbot target leading.");
+            AimSnap = Cfg.Bind("Sliders", "AimSnap", 14f, "Aimbot camera snap rate.");
+            Fov = Cfg.Bind("Sliders", "Fov", 60f, "Camera field of view.");
 
             KeyGod = Cfg.Bind("Keybinds", "ToggleGodMode", KeyCode.F2, "Quick-toggle God mode.");
             KeyMoney = Cfg.Bind("Keybinds", "ToggleInfiniteMoney", KeyCode.F3, "Quick-toggle Infinite money.");
